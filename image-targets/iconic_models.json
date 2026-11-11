@@ -1,0 +1,23 @@
+{
+  "imagePath": "image-targets/iconic_models_luminance.png",
+  "metadata": null,
+  "name": "iconic_models",
+  "type": "PLANAR",
+  "properties": {
+    "left": 0,
+    "top": 0,
+    "width": 1280,
+    "height": 1707,
+    "isRotated": false,
+    "originalWidth": 1280,
+    "originalHeight": 1707
+  },
+  "resources": {
+    "originalImage": "iconic_models_original.png",
+    "croppedImage": "iconic_models_cropped.png",
+    "thumbnailImage": "iconic_models_thumbnail.png",
+    "luminanceImage": "iconic_models_luminance.png"
+  },
+  "created": 1794365337290,
+  "updated": 1794365337290
+}

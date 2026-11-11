@@ -1,0 +1,23 @@
+{
+  "imagePath": "image-targets/cafe_altura_luminance.png",
+  "metadata": null,
+  "name": "cafe_altura",
+  "type": "PLANAR",
+  "properties": {
+    "left": 0,
+    "top": 0,
+    "width": 1280,
+    "height": 1707,
+    "isRotated": false,
+    "originalWidth": 1280,
+    "originalHeight": 1707
+  },
+  "resources": {
+    "originalImage": "cafe_altura_original.png",
+    "croppedImage": "cafe_altura_cropped.png",
+    "thumbnailImage": "cafe_altura_thumbnail.png",
+    "luminanceImage": "cafe_altura_luminance.png"
+  },
+  "created": 1794365336868,
+  "updated": 1794365336868
+}

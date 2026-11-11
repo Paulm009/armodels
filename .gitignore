@@ -1,0 +1,17 @@
+# Dependencias
+node_modules/
+
+# Build del frontend
+client/dist/
+
+# Base de datos y migraciones (las migraciones sí se versionan; los .db no)
+prisma/*.db
+prisma/*.db-journal
+*.db
+
+# Entorno
+.env
+
+# Sistema
+.DS_Store
+Thumbs.db

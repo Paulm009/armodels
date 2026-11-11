@@ -1,0 +1,41 @@
+{
+  "name": "paseo-aranjuez-webar-8thwall",
+  "version": "1.0.0",
+  "description": "Sistema WebAR basado en Image Tracking (8th Wall) para la promocion interactiva de los locales comerciales de Paseo Aranjuez - Proyecto de Grado UCB Cochabamba",
+  "author": "Nicolette Chalup",
+  "license": "MIT",
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c green,cyan \"node src/server/app.js\" \"vite\"",
+    "dev:api": "node src/server/app.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "node src/server/app.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "prepare-targets": "node scripts/generate-image-targets.mjs",
+    "generate-target-cli": "OVERWRITE_FILES=true npx @8thwall/image-target-cli@1.0.0",
+    "test": "node tests/istqb-validation.test.js"
+  },
+  "dependencies": {
+    "@prisma/client": "6.1.0",
+    "cors": "2.8.5",
+    "dotenv": "16.4.7",
+    "express": "4.21.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "three": "0.128.0"
+  },
+  "devDependencies": {
+    "@8thwall/image-target-cli": "1.0.0",
+    "@vitejs/plugin-react": "4.3.4",
+    "concurrently": "9.1.0",
+    "prisma": "6.1.0",
+    "sharp": "0.33.5",
+    "vite": "5.4.11"
+  }
+}
