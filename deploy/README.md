@@ -23,8 +23,9 @@ seguridad y los archivos de operación se guardan por separado para conservar
   las rutas administrativas. El token del proxy se reemplaza en NGINX; las
   cabeceras enviadas por clientes no conceden permisos.
 - Certificado: Certbot `certonly --webroot -w /var/lib/armodels-acme`;
-  renovación con el timer existente y un deploy hook dedicado que primero
-  ejecuta `nginx -t` y luego recarga NGINX.
+  renovación con el timer existente y el hook exclusivo
+  `/etc/armodels/renew-certificate.sh`, que primero ejecuta `nginx -t` y luego
+  recarga NGINX.
 
 No copiar credenciales, bases ni el token a Git. Los archivos de `nginx/` son
 plantillas sin secretos. `admin-proxy.conf` y `admin.htpasswd` se generan en el
@@ -38,14 +39,16 @@ systemctl status armodels.socket armodels.service
 journalctl -u armodels.service -n 50 --no-pager
 curl --fail http://127.0.0.1:18091/api/v1/health
 nginx -t
-certbot renew --cert-name armodels.dsmerch.com --dry-run
+certbot renew --cert-name armodels.dsmerch.com --dry-run --run-deploy-hooks --no-random-sleep-on-renew
 ```
 
 `npm test` utiliza exclusivamente `prisma/test.db`; nunca apuntarlo a producción.
 `npm run db:seed` solo admite una base vacía: se niega a borrar o reemplazar datos.
 Las migraciones se ejecutan con `prisma migrate deploy` desde una compilación
-aislada con Prisma CLI disponible. No instalar paquetes ni ejecutar scripts npm
-como root. No usar `prisma migrate dev` en producción.
+aislada con Prisma CLI disponible. Después de generar el cliente, aplicar las
+migraciones y compilar, ejecutar `npm prune --omit=dev --omit=optional --ignore-scripts`
+para excluir también Prisma CLI (peer opcional del cliente). No instalar paquetes
+ni ejecutar scripts npm como root. No usar `prisma migrate dev` en producción.
 
 Para una actualización manual: preparar otra versión, ejecutar pruebas y build,
 respaldar SQLite con su API de backup, aplicar únicamente migraciones revisadas,
@@ -68,3 +71,6 @@ el firewall global ni la configuración de otros sitios.
 
 La copia previa de NGINX y el inventario de respuestas de los sitios existentes
 están en `/root/armodels-deploy-20261111T183855Z/` en NarcServ.
+
+Los resultados de las comprobaciones del primer despliegue están en
+[`VALIDATION.md`](VALIDATION.md).
