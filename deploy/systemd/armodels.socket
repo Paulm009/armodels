@@ -1,0 +1,11 @@
+[Unit]
+Description=Armodels loopback HTTP socket
+
+[Socket]
+ListenStream=127.0.0.1:18091
+NoDelay=true
+Backlog=128
+Service=armodels.service
+
+[Install]
+WantedBy=sockets.target

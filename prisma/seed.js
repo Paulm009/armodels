@@ -2,7 +2,7 @@
  * ============================================================================
  * SEED - Datos iniciales del Sistema WebAR Paseo Aranjuez
  * Usuarios RBAC, locales, campañas versionadas, imágenes objetivo y contenidos.
- * Idempotente: limpia las tablas antes de insertar.
+ * Solo inicializa una base vacía; nunca elimina datos existentes.
  * ============================================================================
  */
 const path = require('path')
@@ -30,14 +30,15 @@ function mediaSize(name) {
 }
 
 async function main() {
-  console.log('Limpiando base de datos...')
-  await prisma.evento.deleteMany()
-  await prisma.sesion.deleteMany()
-  await prisma.contenido.deleteMany()
-  await prisma.imagenObjetivo.deleteMany()
-  await prisma.campana.deleteMany()
-  await prisma.local.deleteMany()
-  await prisma.usuarioAdministrativo.deleteMany()
+  const counts = await Promise.all([
+    prisma.evento.count(), prisma.sesion.count(), prisma.contenido.count(),
+    prisma.imagenObjetivo.count(), prisma.campana.count(), prisma.local.count(),
+    prisma.usuarioAdministrativo.count(),
+  ])
+  if (counts.some((count) => count > 0)) {
+    throw new Error('Seed cancelado: la base contiene datos. No se ha eliminado ningún registro.')
+  }
+  const publicOrigin = process.env.PUBLIC_ORIGIN || 'http://localhost:5173'
 
   console.log('Insertando usuarios administrativos (RBAC)...')
   const marketing = await prisma.usuarioAdministrativo.create({
@@ -106,7 +107,7 @@ async function main() {
         originalPath,
         propertiesJson,
         contrastScore: 86,
-        qrAccessUrl: `https://localhost/?campaign=${campaignId}`,
+        qrAccessUrl: `${publicOrigin}/?campaign=${encodeURIComponent(campaignId)}`,
       },
     })
 

@@ -6,8 +6,8 @@ require('dotenv').config()
 const path = require('path')
 const fs = require('fs')
 const express = require('express')
-const cors = require('cors')
 const { PaseoAranjuezCoreService } = require('./core-service')
+const { configureSecurity } = require('./security')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const CLIENT_DIST = path.join(ROOT, 'client', 'dist')
@@ -15,13 +15,13 @@ const TARGETS_DIR = path.join(ROOT, 'image-targets')
 const MEDIA_DIR = path.join(ROOT, 'public', 'media')
 
 function getUserRole(req) {
-  return req.headers['x-admin-role'] || 'VISITANTE_PUBLICO'
+  return req.adminRole || 'VISITANTE_PUBLICO'
 }
 
-function createServer(service = new PaseoAranjuezCoreService()) {
+function createServer(service = new PaseoAranjuezCoreService(), options = {}) {
   const app = express()
-  app.use(cors())
-  app.use(express.json({ limit: '1mb' }))
+  const { production, sendError } = configureSecurity(app, options)
+  app.use(express.json({ limit: '1mb', inflate: false }))
 
   // ============ ESTÁTICOS ============
   app.use('/image-targets', express.static(TARGETS_DIR))
@@ -36,11 +36,11 @@ function createServer(service = new PaseoAranjuezCoreService()) {
   // ============ PÚBLICO (VISITANTE) ============
   app.get('/api/v1/public/campaigns/:campaignId', async (req, res) => {
     try {
-      const result = await service.getActiveCampaignForVisitor(req.params.campaignId, req.query.date)
+      const result = await service.getActiveCampaignForVisitor(req.params.campaignId, production ? undefined : req.query.date)
       if (!result.found) return res.status(404).json(result)
       return res.status(200).json(result)
     } catch (err) {
-      return res.status(500).json({ error: err.message })
+      return sendError(res, err, 500)
     }
   })
 
@@ -50,7 +50,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const outcome = await service.ingestEvent(req.body)
       return res.status(outcome.deduplicated ? 200 : 201).json(outcome)
     } catch (err) {
-      return res.status(400).json({ error: err.message })
+      return sendError(res, err)
     }
   })
 
@@ -60,7 +60,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const locales = await service.listLocales()
       return res.status(200).json(locales)
     } catch (err) {
-      return res.status(500).json({ error: err.message })
+      return sendError(res, err, 500)
     }
   })
 
@@ -69,7 +69,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const local = await service.registerLocal(req.body, getUserRole(req))
       return res.status(201).json(local)
     } catch (err) {
-      return res.status(err.statusCode || 400).json({ error: err.message })
+      return sendError(res, err)
     }
   })
 
@@ -78,7 +78,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const local = await service.updateLocal(req.params.id, req.body, getUserRole(req))
       return res.status(200).json(local)
     } catch (err) {
-      return res.status(err.statusCode || 400).json({ error: err.message })
+      return sendError(res, err)
     }
   })
 
@@ -88,7 +88,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const campaigns = await service.listCampaigns({ latestOnly })
       return res.status(200).json(campaigns)
     } catch (err) {
-      return res.status(500).json({ error: err.message })
+      return sendError(res, err, 500)
     }
   })
 
@@ -97,7 +97,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const saved = await service.saveCampaign(req.body, getUserRole(req), req.body.referenceDate)
       return res.status(201).json(saved)
     } catch (err) {
-      return res.status(err.statusCode || 400).json({ error: err.message })
+      return sendError(res, err)
     }
   })
 
@@ -106,7 +106,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const versions = await service.listCampaignVersions(req.params.campaignId)
       return res.status(200).json(versions)
     } catch (err) {
-      return res.status(500).json({ error: err.message })
+      return sendError(res, err, 500)
     }
   })
 
@@ -115,7 +115,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const reports = await service.listReports()
       return res.status(200).json(reports)
     } catch (err) {
-      return res.status(500).json({ error: err.message })
+      return sendError(res, err, 500)
     }
   })
 
@@ -125,7 +125,7 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       const report = await service.computeCampaignMetrics(req.params.campaignId, version)
       return res.status(200).json(report)
     } catch (err) {
-      return res.status(500).json({ error: err.message })
+      return sendError(res, err, 500)
     }
   })
 
@@ -136,15 +136,21 @@ function createServer(service = new PaseoAranjuezCoreService()) {
     return res.status(404).json({ error: 'Frontend no compilado. Ejecuta `npm run build`.' })
   })
 
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err)
+    return sendError(res, err, 500)
+  })
+
   return app
 }
 
 if (require.main === module) {
   const port = Number(process.env.PORT || 3000)
+  const host = process.env.HOST || (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0')
   const app = createServer()
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`[API] Sistema WebAR Paseo Aranjuez escuchando en http://localhost:${port}`)
-    console.log(`[API] Acceso desde tu celular (misma red Wi-Fi): http://<IP-DE-ESTA-PC>:${port}`)
+  const socketActivated = process.env.LISTEN_FDS === '1' && Number(process.env.LISTEN_PID) === process.pid
+  app.listen(socketActivated ? { fd: 3 } : { port, host }, () => {
+    console.log(`[API] Sistema WebAR Paseo Aranjuez escuchando ${socketActivated ? 'en socket systemd' : `en http://${host}:${port}`}`)
   })
 }
 

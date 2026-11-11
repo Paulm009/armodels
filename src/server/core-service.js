@@ -187,6 +187,9 @@ class PaseoAranjuezCoreService {
 
     const t = target || {}
     const c = content || {}
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(t.nombre_tecnico || t.name || 'target')) {
+      throw new Error('Nombre técnico de imagen objetivo inválido.')
+    }
 
     const campana = await this.prisma.campana.create({
       data: {
@@ -312,6 +315,9 @@ class PaseoAranjuezCoreService {
 
   readTargetMetadata(target) {
     const name = target.nombre_tecnico || target.target_id
+    if (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(name)) {
+      throw new Error('Nombre técnico de imagen objetivo inválido.')
+    }
     const filePath = path.join(TARGETS_DIR, `${name}.json`)
     try {
       const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
@@ -339,11 +345,24 @@ class PaseoAranjuezCoreService {
    * idempotente por event_id (Sección 2.8.4 y 2.11.3).
    */
   async ingestEvent(eventInput) {
+    if (!eventInput || typeof eventInput !== 'object' || Array.isArray(eventInput)) {
+      throw new Error('Contrato de evento inválido.')
+    }
     const requiredFields = ['event_id', 'session_id', 'campaign_id', 'campaign_version', 'event_type', 'client_time']
     for (const field of requiredFields) {
       if (eventInput[field] === undefined || eventInput[field] === null || eventInput[field] === '') {
         throw new Error(`Contrato de evento inválido: falta el campo obligatorio '${field}'.`)
       }
+    }
+    for (const field of ['event_id', 'session_id', 'campaign_id', 'event_type']) {
+      if (typeof eventInput[field] !== 'string' || eventInput[field].length > 160) {
+        throw new Error(`Contrato de evento inválido: campo '${field}'.`)
+      }
+    }
+    if (!Number.isSafeInteger(eventInput.campaign_version) || eventInput.campaign_version < 1 ||
+        typeof eventInput.client_time !== 'string' || !parseDate(eventInput.client_time) ||
+        JSON.stringify(eventInput.payload || {}).length > 8192) {
+      throw new Error('Contrato de evento inválido: versión, fecha o tamaño del contenido.')
     }
 
     const existing = await this.prisma.evento.findUnique({ where: { eventId: eventInput.event_id } })

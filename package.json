@@ -19,13 +19,14 @@
     "db:seed": "prisma db seed",
     "prepare-targets": "node scripts/generate-image-targets.mjs",
     "generate-target-cli": "OVERWRITE_FILES=true npx @8thwall/image-target-cli@1.0.0",
-    "test": "node tests/istqb-validation.test.js"
+    "test": "node tests/istqb-validation.test.js && node --test tests/security.test.js",
+    "test:security": "node --test tests/security.test.js"
   },
   "dependencies": {
     "@prisma/client": "6.1.0",
-    "cors": "2.8.5",
+    "cors": "2.8.6",
     "dotenv": "16.4.7",
-    "express": "4.21.2",
+    "express": "4.22.3",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "three": "0.128.0"
@@ -36,6 +37,6 @@
     "concurrently": "9.1.0",
     "prisma": "6.1.0",
     "sharp": "0.33.5",
-    "vite": "5.4.11"
+    "vite": "5.4.21"
   }
 }

@@ -1,0 +1,56 @@
+[Unit]
+Description=Armodels WebAR application
+Requires=armodels.socket
+After=armodels.socket
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=armodels
+Group=armodels
+WorkingDirectory=/var/www/armodels/current
+EnvironmentFile=/etc/armodels/production.env
+ExecStart=/usr/local/bin/node src/server/app.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+PrivateIPC=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RemoveIPC=true
+TemporaryFileSystem=/var:ro /etc:ro /run:ro /srv:ro /opt:ro /mnt:ro /media:ro
+BindReadOnlyPaths=/var/www/armodels /etc/ld.so.cache /etc/localtime /etc/passwd /etc/group /etc/nsswitch.conf /etc/ssl/certs
+BindPaths=/var/lib/armodels
+ReadWritePaths=/var/lib/armodels
+MemoryHigh=384M
+MemoryMax=512M
+CPUQuota=100%
+TasksMax=64
+LimitNOFILE=4096
+LimitFSIZE=1G
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+SyslogIdentifier=armodels
+
+[Install]
+WantedBy=multi-user.target

@@ -11,6 +11,11 @@ prisma/*.db-journal
 
 # Entorno
 .env
+.env.*
+!.env.example
+.dev.vars
+.wrangler/
+.test-worker/
 
 # Sistema
 .DS_Store
