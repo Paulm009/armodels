@@ -123,63 +123,69 @@ export default function WebARModal({ campaign, onClose, onEvent }) {
   const secondsLabel = accumulatedSec.toFixed(1).replace('.', ',')
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh]">
-        <div className="px-5 py-4 border-b border-[#e6e4dc] flex items-center justify-between">
-          <div>
-            <h2 className="font-display font-extrabold text-[#18241e]">{campaign.nombre}</h2>
-            <p className="text-xs text-[#657069]">
-              {campaign.local?.nombre || ''} · v{campaign.version} · {statusLabel(campaign.estado)}
-            </p>
+    <div className="fixed inset-0 z-50 flex flex-col bg-black">
+      {/* Barra superior */}
+      <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 bg-[#18241e] text-white lg:bg-white lg:border-b lg:border-[#e6e4dc]">
+        <div className="min-w-0">
+          <h2 className="font-display font-extrabold text-base truncate lg:text-[#18241e]">{campaign.nombre}</h2>
+          <p className="text-xs text-white/70 truncate lg:text-[#657069]">
+            {campaign.local?.nombre || ''} · v{campaign.version} · {statusLabel(campaign.estado)}
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-white/80 hover:bg-white/10 lg:text-[#657069] lg:hover:bg-[#f4f3ee]"
+          aria-label="Cerrar"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Zona principal */}
+      <div className="relative flex-1 min-h-0 flex flex-col lg:flex-row">
+        {/* Cámara */}
+        <div className="relative flex-1 min-h-0 bg-black overflow-hidden">
+          <canvas ref={canvasRef} className="webar-canvas" />
+          {error && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center p-6 bg-black/70 text-white text-sm text-center">
+              {error}
+            </div>
+          )}
+
+          <div className="absolute top-3 left-3 z-20 flex items-center gap-2">
+            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold text-white bg-black/60 ${tracked ? 'pulse-dot' : ''}`}>
+              {tracked ? '● Objetivo seguido' : '● ' + status}
+            </span>
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-[#f4f3ee] text-[#657069]">
-            ✕
-          </button>
         </div>
 
-        <div className="flex-1 p-5 flex flex-col lg:flex-row gap-5 overflow-y-auto">
-          {/* Zona de render */}
-          <div className="relative flex-1 rounded-xl overflow-hidden bg-black min-h-[320px]">
-            <canvas ref={canvasRef} className="webar-canvas" />
-            {error && (
-              <div className="absolute inset-0 flex items-center justify-center p-6 bg-black/70 text-white text-sm text-center">
-                {error}
-              </div>
-            )}
-
-            <div className="absolute top-3 left-3 flex items-center gap-2">
-              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold text-white bg-black/60 ${tracked ? 'pulse-dot' : ''}`}>
-                {tracked ? '● Objetivo seguido' : '● ' + status}
-              </span>
-            </div>
-          </div>
-
-          {/* Panel lateral de información */}
-          <div className="w-full lg:w-72 space-y-4">
-            <div className="card p-4">
-              <div className="text-xs text-[#657069]">Seguimiento visible</div>
-              <div className="font-display font-extrabold text-2xl text-[#18241e]">{secondsLabel} s</div>
+        {/* Panel de información: hoja inferior en móvil, panel lateral en escritorio */}
+        <aside className="absolute inset-x-0 bottom-0 z-30 lg:static lg:z-auto lg:w-80 lg:shrink-0 lg:bg-white lg:border-l lg:border-[#e6e4dc]">
+          <div className="max-h-[60vh] lg:max-h-none overflow-y-auto p-4 lg:p-5 space-y-3 lg:space-y-4 bg-[#18241e]/95 text-white backdrop-blur lg:bg-transparent lg:text-inherit rounded-t-2xl lg:rounded-none">
+            <div>
+              <div className="text-xs opacity-70 lg:text-[#657069] lg:opacity-100">Seguimiento visible</div>
+              <div className="font-display font-extrabold text-2xl">{secondsLabel} s</div>
             </div>
 
-            <div className="card p-4 space-y-2">
-              <div className="text-xs text-[#657069]">Promoción</div>
-              <div className="font-semibold text-[#18241e]">{content?.titulo_promocion || campaign.nombre}</div>
-              <p className="text-sm text-[#4a5750]">{content?.condiciones_texto}</p>
+            <div className="space-y-1">
+              <div className="text-xs opacity-70 lg:text-[#657069] lg:opacity-100">Promoción</div>
+              <div className="font-semibold">{content?.titulo_promocion || campaign.nombre}</div>
+              <p className="text-sm opacity-90 lg:text-[#4a5750] lg:opacity-100">{content?.condiciones_texto}</p>
             </div>
 
             <button onClick={handleCta} className="btn-primary w-full py-2.5 rounded-xl text-sm font-bold">
               {content?.cta_primaria_label || 'Ver condiciones'}
             </button>
 
-            <div className="text-xs text-[#657069] leading-relaxed">
-              <p className="font-semibold text-[#18241e] mb-1">Cómo funciona</p>
+            <div className="text-xs opacity-80 lg:text-[#657069] lg:opacity-100 leading-relaxed">
+              <p className="font-semibold mb-1">Cómo funciona</p>
               <p>
-                Apunta la cámara al afiche. Al reconocerlo se emite <code className="bg-[#eef0f2] px-1 rounded">xrimagefound</code>{' '}
+                Apunta la cámara al afiche. Al reconocerlo se emite <code className="bg-white/15 lg:bg-[#eef0f2] px-1 rounded">xrimagefound</code>{' '}
                 y se muestra el contenido superpuesto.
               </p>
             </div>
           </div>
-        </div>
+        </aside>
       </div>
     </div>
   )
