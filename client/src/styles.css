@@ -71,6 +71,18 @@ h3,
   display: block;
 }
 
+.webar-sheet {
+  height: var(--sheet-h, 45vh);
+  max-height: 80vh;
+}
+
+@media (min-width: 1024px) {
+  .webar-sheet {
+    height: 100%;
+    max-height: none;
+  }
+}
+
 @keyframes pulse-dot {
   0%,
   100% {

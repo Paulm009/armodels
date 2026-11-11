@@ -54,6 +54,7 @@ export class WebARController {
   async start(canvas) {
     this.canvas = canvas
     if (!window.THREE) window.THREE = THREE
+    applyHDCameraPatch()
 
     try {
       await load8thWallEngine()
@@ -382,4 +383,35 @@ function XRExtrasLoadingAvailable() {
     window.XRExtras.Loading &&
     window.XRExtras.RuntimeError
   )
+}
+
+// El motor open-source fija la resolución de cámara (hasta ~960×720 en Android,
+// ~720p en iOS). Se fuerza una resolución alta (ideal 1920×1080, degradando de
+// forma elegante) para que la imagen se vea nítida también de lejos.
+let hdCameraPatched = false
+
+function applyHDCameraPatch() {
+  if (hdCameraPatched) return
+  if (typeof navigator === 'undefined') return
+  const md = navigator.mediaDevices
+  if (!md || typeof md.getUserMedia !== 'function') return
+  hdCameraPatched = true
+
+  const original = md.getUserMedia.bind(md)
+  md.getUserMedia = (constraints) => {
+    try {
+      const video = constraints && constraints.video
+      if (video && typeof video === 'object' && !Array.isArray(video)) {
+        const next = { ...video }
+        delete next.width
+        delete next.height
+        next.width = { ideal: 1920 }
+        next.height = { ideal: 1080 }
+        constraints = { ...constraints, video: next }
+      }
+    } catch {
+      /* noop */
+    }
+    return original(constraints)
+  }
 }
