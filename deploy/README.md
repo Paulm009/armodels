@@ -19,18 +19,20 @@ seguridad y los archivos de operación se guardan por separado para conservar
   systemd dentro de una red privada, sin salida a Internet ni a otros servicios.
   Su espacio de archivos oculta los demás proyectos y configuraciones privadas.
 - NGINX: `/etc/nginx/conf.d/armodels.dsmerch.com.conf`; snippets exclusivos
-  en `/etc/nginx/armodels/`. La autenticación HTTP Basic protege el panel y todas
-  las rutas administrativas. El token del proxy se reemplaza en NGINX; las
-  cabeceras enviadas por clientes no conceden permisos.
+  en `/etc/nginx/armodels/`. **Demo abierto, incluida la edición, sin autenticación
+  HTTP Basic**, por indicación explícita del propietario. NGINX fija la identidad
+  `demo-publico` e inyecta un token interno para las rutas administrativas. El
+  token verifica al proxy; no autentica a visitantes ni restringe la edición.
 - Certificado: Certbot `certonly --webroot -w /var/lib/armodels-acme`;
   renovación con el timer existente y el hook exclusivo
   `/etc/armodels/renew-certificate.sh`, que primero ejecuta `nginx -t` y luego
   recarga NGINX.
 
 No copiar credenciales, bases ni el token a Git. Los archivos de `nginx/` son
-plantillas sin secretos. `admin-proxy.conf` y `admin.htpasswd` se generan en el
-servidor. La cuenta inicial del panel se guarda en un archivo accesible solo por
-root y se entrega al propietario fuera del repositorio.
+plantillas sin secretos. `admin-proxy.conf` se genera en el servidor y contiene
+únicamente la cabecera del token interno. Las credenciales Basic anteriores
+quedaron archivadas fuera de la configuración activa. El acceso actual al demo
+no requiere usuario ni contraseña.
 
 ## Validación y operación
 
@@ -54,7 +56,7 @@ Para una actualización manual: preparar otra versión, ejecutar pruebas y build
 respaldar SQLite con su API de backup, aplicar únicamente migraciones revisadas,
 excluir dependencias de desarrollo y dejar el código root:armodels. Cambiar
 `current` de forma atómica y reiniciar exclusivamente `armodels.service`.
-Comprobar salud, autenticación y los sitios existentes después del cambio.
+Comprobar salud, acceso público del demo y los sitios existentes después del cambio.
 
 ## Recuperación
 

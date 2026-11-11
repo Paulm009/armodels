@@ -6,7 +6,25 @@ Código desplegado: `16d459aa96472f5e09501dc9346041c3eca24292`, derivado de
 `16f82d153be73a5b1259ffca5a744ef453759082`. La rama `main` conserva la referencia
 solicitada; los ajustes están en `codex/production-hardening`. No se configuró CI/CD.
 
-## Comprobaciones completadas
+## Actualización: demo público sin Basic
+
+Por indicación explícita del propietario, se retiró HTTP Basic del panel y de las
+rutas administrativas. El acceso de lectura y edición es público. El token
+interno solo verifica que la petición provenga del proxy NGINX; no autentica a
+visitantes. Se mantienen el aislamiento del proceso y los límites de recursos.
+
+- Panel, salud, locales, campañas y reportes: HTTP 200 sin credenciales ni
+  cabecera `WWW-Authenticate`.
+- Una petición anónima de edición con datos incompletos alcanza la validación
+  de entrada (HTTP 400), sin crear ni modificar registros.
+- El navegador muestra el panel con sus campañas y locales sin pedir login.
+- Origen externo rechazado con HTTP 403; integridad SQLite correcta.
+- `nginx -t` correcto y recarga completada. La aplicación mantuvo su mismo PID.
+- No se modificaron los archivos de configuración NGINX de otros proyectos.
+- Credenciales Basic retiradas de la configuración activa y archivadas en
+  `/root/armodels-remove-basic-20261111T191051Z/`, junto con el respaldo para revertir.
+
+## Comprobaciones del despliegue inicial
 
 - Ubuntu 24.04 / Node 24: las 8 pruebas originales y las 9 de seguridad pasan.
 - Compilación Vite completada en un proceso sin privilegios y con recursos limitados.
@@ -39,10 +57,11 @@ están en `/root/armodels-deploy-20261111T183855Z/`, accesible solo por root.
 Las credenciales administrativas están fuera del repositorio y no aparecen en
 los registros de validación.
 
-Las peticiones autenticadas comprueban la entrega del panel y sus APIs. El
-navegador automático no pudo atravesar la autenticación HTTP Basic, por lo que
-no se realizó una inspección visual autenticada ni una prueba física de cámara.
-El script CDN del motor WebAR y el de Tailwind responden HTTP 200.
+En el despliegue inicial, las peticiones autenticadas comprobaron la entrega del
+panel y sus APIs; el navegador automático no pudo atravesar HTTP Basic. Tras
+retirar Basic, se verificó el panel en el navegador sin credenciales. No se ha
+realizado una prueba física de cámara. El script CDN del motor WebAR y el de
+Tailwind responden HTTP 200.
 
 La suite original falla al arrancar el motor de migración Prisma en este equipo
 Windows; en el servidor Linux las 17 pruebas y la compilación se completaron.
