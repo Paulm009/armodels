@@ -52,6 +52,7 @@ export default function CampaignModal({ editing, locales, onClose, onSaved, show
     setErr(null)
 
     const targetName = form.target_name || 'cafe_altura'
+    const campaignId = editing ? editing.campaign_id : `camp-${Date.now()}`
     const target = {
       target_id: `tgt-${targetName}`,
       nombre_tecnico: targetName,
@@ -60,7 +61,7 @@ export default function CampaignModal({ editing, locales, onClose, onSaved, show
       original_path: `/image-targets/${targetName}_original.png`,
       properties: {},
       contrast_score: 86,
-      qr_access_url: `https://localhost/?campaign=${editing ? editing.campaign_id : 'nueva'}`,
+      qr_access_url: `${window.location.origin}/?campaign=${encodeURIComponent(campaignId)}`,
     }
 
     const content = {
@@ -77,7 +78,7 @@ export default function CampaignModal({ editing, locales, onClose, onSaved, show
     }
 
     const payload = {
-      campaign_id: editing ? editing.campaign_id : `camp-${Date.now()}`,
+      campaign_id: campaignId,
       local_id: form.local_id,
       nombre: form.nombre.trim(),
       estado: form.estado,

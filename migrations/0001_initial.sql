@@ -27,7 +27,7 @@ CREATE TABLE "campanas" (
     "version" INTEGER NOT NULL,
     "local_id" TEXT NOT NULL,
     "nombre" TEXT NOT NULL,
-    "estado" TEXT NOT NULL,
+    "estado" TEXT NOT NULL CHECK (estado IN ('EN_PREPARACION', 'PUBLICADA', 'ARCHIVADA', 'VENCIDA')),
     "fecha_inicio" DATETIME NOT NULL,
     "fecha_fin" DATETIME NOT NULL,
     "creado_por" TEXT,
@@ -46,7 +46,7 @@ CREATE TABLE "imagenes_objetivo" (
     "image_path" TEXT NOT NULL,
     "thumbnail_path" TEXT NOT NULL,
     "original_path" TEXT NOT NULL,
-    "properties_json" TEXT NOT NULL,
+    "properties_json" TEXT NOT NULL CHECK (json_valid(properties_json)),
     "contrast_score" REAL NOT NULL,
     "qr_access_url" TEXT NOT NULL,
     "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -95,7 +95,7 @@ CREATE TABLE "eventos" (
     "target_id" TEXT,
     "target_version" INTEGER,
     "event_type" TEXT NOT NULL,
-    "payload" TEXT NOT NULL,
+    "payload" TEXT NOT NULL CHECK (json_valid(payload)),
     "client_time" DATETIME NOT NULL,
     "received_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "schema_version" TEXT NOT NULL DEFAULT '1.0.0',
@@ -109,7 +109,11 @@ CREATE UNIQUE INDEX "locales_nombre_key" ON "locales"("nombre");
 CREATE UNIQUE INDEX "campanas_campaign_id_version_key" ON "campanas"("campaign_id", "version");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "imagenes_objetivo_target_id_version_key" ON "imagenes_objetivo"("target_id", "version");
+-- Un mismo afiche puede utilizarse en campañas independientes.
+CREATE UNIQUE INDEX "imagenes_objetivo_campana_target_key" ON "imagenes_objetivo"("campana_id", "target_id");
+
+CREATE INDEX "campanas_local_id_idx" ON "campanas"("local_id");
+CREATE INDEX "contenidos_campana_id_idx" ON "contenidos"("campana_id");
 
 -- CreateIndex
 CREATE INDEX "sesiones_campaign_id_campaign_version_idx" ON "sesiones"("campaign_id", "campaign_version");

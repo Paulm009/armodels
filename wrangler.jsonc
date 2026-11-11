@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "armodels",
+  "account_id": "0d34af7517f9ee522e2496ebf43953c4",
+  "main": "src/server/worker.mjs",
+  "compatibility_date": "2026-11-11",
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./client/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "run_worker_first": ["/api", "/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "armodels-db",
+      "database_id": "bf433b5c-833d-47ba-85a0-5b7a5a215637",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

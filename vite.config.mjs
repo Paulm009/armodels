@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   root: path.resolve(__dirname, 'client'),
+  publicDir: path.resolve(__dirname, 'public'),
   plugins: [react()],
   server: {
     host: true,
@@ -14,9 +15,9 @@ export default defineConfig({
     strictPort: true,
     allowedHosts: true,
     proxy: {
-      '/api': 'http://localhost:3000',
-      '/image-targets': 'http://localhost:3000',
-      '/media': 'http://localhost:3000',
+      '/api': 'http://localhost:8787',
+      '/image-targets': 'http://localhost:8787',
+      '/media': 'http://localhost:8787',
     },
   },
   build: {

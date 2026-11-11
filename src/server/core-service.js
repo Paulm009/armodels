@@ -1,14 +1,10 @@
 /**
  * ============================================================================
  * SERVICIO DE APLICACIÓN Y ANALÍTICA DE CAMPAÑAS - PASEO ARANJUEZ
- * Backend funcional respaldado por Prisma (SQLite + migraciones).
+ * Reglas de negocio independientes del runtime, con persistencia D1 inyectada.
  * Implementa OE1, OE2, OE3, OE6 y OE7 (Secciones 2.6 a 2.11 del Marco Teórico).
  * ============================================================================
  */
-const path = require('path')
-const fs = require('fs')
-const { getPrismaClient } = require('./db')
-
 const ALLOWED_ROLES_FOR_MUTATION = new Set(['DIRECCION_MARKETING', 'GERENCIA'])
 const ALLOWED_MIME_SIGNATURES = {
   'image/png': [0x89, 0x50, 0x4e, 0x47],
@@ -17,10 +13,17 @@ const ALLOWED_MIME_SIGNATURES = {
 }
 
 const CAMPAIGN_STATES = ['EN_PREPARACION', 'PUBLICADA', 'ARCHIVADA', 'VENCIDA']
-const TARGETS_DIR = path.resolve(__dirname, '..', '..', 'image-targets')
+
+function invalid(message) {
+  return Object.assign(new Error(message), { statusCode: 400 })
+}
+
+function isText(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
 
 function parseDate(value) {
-  if (value instanceof Date) return value
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
   if (typeof value === 'string' && value) {
     const d = new Date(value)
     if (!Number.isNaN(d.getTime())) return d
@@ -35,8 +38,10 @@ function toISODate(date) {
 }
 
 class PaseoAranjuezCoreService {
-  constructor(prismaClient = null) {
-    this.prisma = prismaClient || getPrismaClient()
+  constructor(repository, readTargetMetadata = null) {
+    if (!repository) throw new Error('Se requiere un repositorio de datos.')
+    this.repository = repository
+    this.loadTargetMetadata = readTargetMetadata
   }
 
   /**
@@ -85,44 +90,39 @@ class PaseoAranjuezCoreService {
 
   async registerLocal(localData, userRole = 'DIRECCION_MARKETING') {
     this.authorizeAdminOperation(userRole, 'registerLocal')
-    if (!localData.nombre || !localData.rubro) {
-      throw new Error('Datos obligatorios del local incompletos.')
+    if (!isText(localData.nombre) || !isText(localData.rubro)) {
+      throw invalid('Datos obligatorios del local incompletos.')
     }
-    return this.prisma.local.create({
-      data: {
-        nombre: localData.nombre,
-        rubro: localData.rubro,
-        ubicacion: localData.ubicacion || 'Planta baja',
-        whatsapp: localData.contacto_whatsapp || localData.whatsapp || '',
-        descripcion: localData.descripcion || null,
-        activo: localData.activo !== false,
-      },
+    return this.repository.createLocal({
+      nombre: localData.nombre,
+      rubro: localData.rubro,
+      ubicacion: localData.ubicacion || 'Planta baja',
+      whatsapp: localData.contacto_whatsapp || localData.whatsapp || '',
+      descripcion: localData.descripcion || null,
+      activo: localData.activo !== false,
     })
   }
 
   async listLocales() {
-    const locales = await this.prisma.local.findMany({
-      orderBy: { nombre: 'asc' },
-      include: { _count: { select: { campanas: true } } },
-    })
-    return locales.map((l) => ({
-      ...l,
-      campanasCount: l._count.campanas,
-      _count: undefined,
-    }))
+    return this.repository.listLocales()
   }
 
   async updateLocal(id, data, userRole = 'DIRECCION_MARKETING') {
     this.authorizeAdminOperation(userRole, 'updateLocal')
-    return this.prisma.local.update({
-      where: { id },
-      data: {
-        nombre: data.nombre,
-        rubro: data.rubro,
-        ubicacion: data.ubicacion,
-        whatsapp: data.whatsapp,
-        descripcion: data.descripcion,
-      },
+    for (const key of ['nombre', 'rubro', 'ubicacion', 'whatsapp', 'descripcion']) {
+      if (data[key] !== undefined && typeof data[key] !== 'string' && !(key === 'descripcion' && data[key] === null)) {
+        throw invalid(`El campo '${key}' debe ser texto.`)
+      }
+    }
+    if (data.nombre !== undefined && !isText(data.nombre) || data.rubro !== undefined && !isText(data.rubro)) {
+      throw invalid('El nombre y el rubro no pueden estar vacíos.')
+    }
+    return this.repository.updateLocal(id, {
+      nombre: data.nombre,
+      rubro: data.rubro,
+      ubicacion: data.ubicacion,
+      whatsapp: data.whatsapp,
+      descripcion: data.descripcion,
     })
   }
 
@@ -146,14 +146,14 @@ class PaseoAranjuezCoreService {
       content,
     } = campaignInput
 
-    if (!campaign_id || !local_id || !nombre) {
-      throw new Error('Datos obligatorios de la campaña incompletos.')
+    if (!isText(campaign_id) || !isText(local_id) || !isText(nombre)) {
+      throw invalid('Datos obligatorios de la campaña incompletos.')
     }
     if (!CAMPAIGN_STATES.includes(estado)) {
-      throw new Error(`Estado de campaña inválido: ${estado}.`)
+      throw invalid(`Estado de campaña inválido: ${estado}.`)
     }
 
-    const local = await this.prisma.local.findUnique({ where: { id: local_id } })
+    const local = await this.repository.getLocal(local_id)
     if (!local) {
       const err = new Error(`El local comercial '${local_id}' no existe.`)
       err.statusCode = 400
@@ -163,35 +163,32 @@ class PaseoAranjuezCoreService {
     const inicio = parseDate(fecha_inicio)
     const fin = parseDate(fecha_fin)
     if (!inicio || !fin) {
-      throw new Error('Las fechas de vigencia son obligatorias.')
+      throw invalid('Las fechas de vigencia son obligatorias.')
     }
     if (fin < inicio) {
-      throw new Error('La fecha de fin no puede ser anterior a la fecha de inicio.')
+      throw invalid('La fecha de fin no puede ser anterior a la fecha de inicio.')
     }
 
     const referenceDate = referenceDateStr ? parseDate(referenceDateStr) : new Date()
+    if (!referenceDate) throw invalid('Fecha de referencia inválida.')
     if (estado === 'PUBLICADA') {
-      if (fin < referenceDate) {
-        throw new Error('No se puede publicar una campaña cuya fecha de vigencia ya ha vencido (Sección 2.11.1).')
+      if (toISODate(fin) < toISODate(referenceDate)) {
+        throw invalid('No se puede publicar una campaña cuya fecha de vigencia ya ha vencido (Sección 2.11.1).')
       }
       if (!target || !target.target_id || !target.image_path && !target.imagePath) {
-        throw new Error('Transacción rechazada (Sección 2.6.5): No se puede publicar una campaña sin su Imagen Objetivo.')
+        throw invalid('Transacción rechazada (Sección 2.6.5): No se puede publicar una campaña sin su Imagen Objetivo.')
       }
       if (!content || !content.media_url && !content.mediaUrl || !content.condiciones_texto && !content.condicionesTexto) {
-        throw new Error('Transacción rechazada (Sección 2.6.5): No se puede publicar una campaña sin su contenido y condiciones accesibles.')
+        throw invalid('Transacción rechazada (Sección 2.6.5): No se puede publicar una campaña sin su contenido y condiciones accesibles.')
       }
     }
-
-    const count = await this.prisma.campana.count({ where: { campaignId: campaign_id } })
-    const nextVersion = count + 1
 
     const t = target || {}
     const c = content || {}
 
-    const campana = await this.prisma.campana.create({
-      data: {
+    const campana = await this.repository.saveCampaign({
+      campaign: {
         campaignId: campaign_id,
-        version: nextVersion,
         localId: local_id,
         nombre,
         estado,
@@ -200,13 +197,8 @@ class PaseoAranjuezCoreService {
         creadoPor: campaignInput.creado_por || null,
         aprobadoPor: campaignInput.aprobado_por || null,
       },
-    })
-
-    const objetivo = await this.prisma.imagenObjetivo.create({
-      data: {
+      target: {
         targetId: t.target_id || `${campaign_id}-target`,
-        version: nextVersion,
-        campanaId: campana.id,
         nombreTecnico: t.nombre_tecnico || t.name || 'target',
         imagePath: t.image_path || t.imagePath || '',
         thumbnailPath: t.thumbnail_path || t.thumbnailPath || '',
@@ -215,12 +207,7 @@ class PaseoAranjuezCoreService {
         contrastScore: t.contrast_score ?? t.contrastScore ?? 80,
         qrAccessUrl: t.qr_access_url || t.qrAccessUrl || '',
       },
-    })
-
-    await this.prisma.contenido.create({
-      data: {
-        campanaId: campana.id,
-        imagenObjetivoId: objetivo.id,
+      content: {
         tipoContenido: c.tipo_contenido || c.tipoContenido || 'PANEL_INFORMATIVO',
         mediaUrl: c.media_url || c.mediaUrl || '',
         mediaSizeBytes: c.media_size_bytes ?? c.mediaSizeBytes ?? 1024,
@@ -234,41 +221,22 @@ class PaseoAranjuezCoreService {
       },
     })
 
-    return this.getCampaignById(campaign_id, nextVersion)
+    return serializeCampaign(campana)
   }
 
   async getCampaignById(campaignId, version = null) {
-    const where = { campaignId }
-    if (version !== null) where.version = version
-    const campanas = await this.prisma.campana.findMany({
-      where,
-      orderBy: { version: 'desc' },
-      include: { local: true, imagenes: true, contenidos: true },
-    })
+    const campanas = await this.repository.listCampaigns({ campaignId, version, latestOnly: version === null })
     if (campanas.length === 0) return null
     return serializeCampaign(campanas[0])
   }
 
   async listCampaigns({ latestOnly = true } = {}) {
-    const campanas = await this.prisma.campana.findMany({
-      orderBy: [{ campaignId: 'asc' }, { version: 'desc' }],
-      include: { local: true, imagenes: true, contenidos: true },
-    })
-    const serialized = campanas.map(serializeCampaign)
-    if (!latestOnly) return serialized
-    const latest = new Map()
-    for (const c of serialized) {
-      if (!latest.has(c.campaign_id)) latest.set(c.campaign_id, c)
-    }
-    return Array.from(latest.values())
+    const campanas = await this.repository.listCampaigns({ latestOnly })
+    return campanas.map(serializeCampaign)
   }
 
   async listCampaignVersions(campaignId) {
-    const campanas = await this.prisma.campana.findMany({
-      where: { campaignId },
-      orderBy: { version: 'desc' },
-      include: { local: true, imagenes: true, contenidos: true },
-    })
+    const campanas = await this.repository.listCampaigns({ campaignId })
     return campanas.map(serializeCampaign)
   }
 
@@ -279,9 +247,10 @@ class PaseoAranjuezCoreService {
     }
     const latest = versions[0]
     const referenceDate = referenceDateStr ? parseDate(referenceDateStr) : new Date()
+    if (!referenceDate) throw invalid('Fecha de referencia inválida.')
     const fechaFin = parseDate(latest.fecha_fin)
 
-    if (latest.estado === 'VENCIDA' || (fechaFin && fechaFin < referenceDate)) {
+    if (latest.estado === 'VENCIDA' || (fechaFin && toISODate(fechaFin) < toISODate(referenceDate))) {
       return {
         found: true,
         status: 'EXPIRED',
@@ -300,7 +269,7 @@ class PaseoAranjuezCoreService {
       }
     }
 
-    const imageTargetData = latest.targets.map((target) => this.readTargetMetadata(target))
+    const imageTargetData = await Promise.all(latest.targets.map((target) => this.readTargetMetadata(target)))
     return {
       found: true,
       status: 'ACTIVE',
@@ -310,25 +279,21 @@ class PaseoAranjuezCoreService {
     }
   }
 
-  readTargetMetadata(target) {
+  async readTargetMetadata(target) {
     const name = target.nombre_tecnico || target.target_id
-    const filePath = path.join(TARGETS_DIR, `${name}.json`)
-    try {
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-      return { ...raw, name: raw.name || name }
-    } catch {
-      // Reconstrucción mínima a partir del registro persistido
-      return {
-        imagePath: target.image_path,
-        name,
-        type: 'PLANAR',
-        properties: safeParseJson(target.properties_json, {}),
-        resources: {
-          originalImage: path.basename(target.original_path || ''),
-          thumbnailImage: path.basename(target.thumbnail_path || ''),
-          luminanceImage: path.basename(target.image_path || ''),
-        },
-      }
+    const raw = this.loadTargetMetadata ? await this.loadTargetMetadata(name) : null
+    if (raw) return { ...raw, name: raw.name || name }
+    // Reconstrucción mínima a partir del registro persistido.
+    return {
+      imagePath: target.image_path,
+      name,
+      type: 'PLANAR',
+      properties: target.properties || {},
+      resources: {
+        originalImage: (target.original_path || '').split('/').pop(),
+        thumbnailImage: (target.thumbnail_path || '').split('/').pop(),
+        luminanceImage: (target.image_path || '').split('/').pop(),
+      },
     }
   }
 
@@ -342,19 +307,22 @@ class PaseoAranjuezCoreService {
     const requiredFields = ['event_id', 'session_id', 'campaign_id', 'campaign_version', 'event_type', 'client_time']
     for (const field of requiredFields) {
       if (eventInput[field] === undefined || eventInput[field] === null || eventInput[field] === '') {
-        throw new Error(`Contrato de evento inválido: falta el campo obligatorio '${field}'.`)
+        throw invalid(`Contrato de evento inválido: falta el campo obligatorio '${field}'.`)
       }
     }
 
-    const existing = await this.prisma.evento.findUnique({ where: { eventId: eventInput.event_id } })
-    if (existing) {
-      return { deduplicated: true, event: serializeEvent(existing) }
+    if (!Number.isInteger(eventInput.campaign_version) || eventInput.campaign_version < 1) {
+      throw invalid('campaign_version debe ser un entero positivo.')
     }
-
-    await this.prisma.sesion.upsert({
-      where: { sessionId: eventInput.session_id },
-      update: {},
-      create: {
+    if (!parseDate(eventInput.client_time)) throw invalid('client_time inválido.')
+    for (const key of ['event_id', 'session_id', 'campaign_id', 'event_type']) {
+      if (!isText(eventInput[key]) || eventInput[key].length > 256) throw invalid(`Campo de evento inválido: '${key}'.`)
+    }
+    if (eventInput.payload !== undefined && (!eventInput.payload || typeof eventInput.payload !== 'object' || Array.isArray(eventInput.payload))) {
+      throw invalid('payload debe ser un objeto JSON.')
+    }
+    const outcome = await this.repository.ingestEvent({
+      session: {
         sessionId: eventInput.session_id,
         campaignId: eventInput.campaign_id,
         campaignVersion: eventInput.campaign_version,
@@ -364,10 +332,7 @@ class PaseoAranjuezCoreService {
         scanningStarted: eventInput.event_type === 'SCANNING_STARTED',
         startedAt: parseDate(eventInput.client_time) || new Date(),
       },
-    })
-
-    const stored = await this.prisma.evento.create({
-      data: {
+      event: {
         eventId: eventInput.event_id,
         sessionId: eventInput.session_id,
         campaignId: eventInput.campaign_id,
@@ -381,14 +346,7 @@ class PaseoAranjuezCoreService {
       },
     })
 
-    if (eventInput.event_type === 'SESSION_CLOSE') {
-      await this.prisma.sesion.update({
-        where: { sessionId: eventInput.session_id },
-        data: { endedAt: new Date() },
-      })
-    }
-
-    return { deduplicated: false, event: serializeEvent(stored) }
+    return { deduplicated: outcome.deduplicated, event: serializeEvent(outcome.event) }
   }
 
   /**
@@ -396,32 +354,25 @@ class PaseoAranjuezCoreService {
    * devolviendo 'No calculable (N/C)' cuando el denominador es 0.
    */
   async computeCampaignMetrics(campaignId, campaignVersion = null) {
-    const where = { campaignId }
-    if (campaignVersion !== null) where.campaignVersion = campaignVersion
-    const eventos = await this.prisma.evento.findMany({ where, orderBy: { clientTime: 'asc' } })
-    const events = eventos.map(serializeEvent)
-    return computeMetricsFromEvents(campaignId, campaignVersion, events)
+    return this.repository.computeCampaignMetrics(campaignId, campaignVersion)
   }
 
   async listReports() {
-    const campanas = await this.prisma.campana.findMany({
-      orderBy: [{ campaignId: 'asc' }, { version: 'desc' }],
-      include: { local: true },
-    })
+    const { campaigns: campanas, metrics } = await this.repository.listReportData()
     const reports = []
     for (const c of campanas) {
-      const metrics = await this.computeCampaignMetrics(c.campaignId, c.version)
+      const report = metrics.get(`${c.campaignId}:${c.version}`) || formatMetricReport(c.campaignId, c.version)
       reports.push({
         campaignId: c.campaignId,
         title: c.nombre,
         version: c.version,
         estado: c.estado,
         mode: 'CAMERA',
-        sessions: metrics.indicators.sesionesConReconocimiento.denominator,
-        recognized: metrics.indicators.sesionesConReconocimiento.value,
-        trackingSec: metrics.indicators.seguimientoVisibleSegundos.valueSec,
-        ctaClicks: metrics.indicators.sesionesConCTA.numerator,
-        errors: metrics.indicators.tasaErrorDeSesion.numerator,
+        sessions: report.indicators.sesionesConReconocimiento.denominator,
+        recognized: report.indicators.sesionesConReconocimiento.value,
+        trackingSec: report.indicators.seguimientoVisibleSegundos.valueSec,
+        ctaClicks: report.indicators.sesionesConCTA.numerator,
+        errors: report.indicators.tasaErrorDeSesion.numerator,
       })
     }
     return reports
@@ -547,6 +498,23 @@ function computeMetricsFromEvents(campaignId, campaignVersion, events) {
     }
   }
 
+  return formatMetricReport(campaignId, campaignVersion, {
+    totalSessionsInitiated, sessionsWithCameraAndScan, sessionsWithRecognition,
+    sessionsWithContentShown, sessionsWithCtaClick, sessionsWithError,
+    totalVisibleTrackingMs, totalLosses, uniqueEventsCount: events.length,
+    avgLatencyMs: recognitionLatenciesMs.length
+      ? Math.round(recognitionLatenciesMs.reduce((a, b) => a + b, 0) / recognitionLatenciesMs.length)
+      : null,
+    latencySamples: recognitionLatenciesMs.length,
+  })
+}
+
+function formatMetricReport(campaignId, campaignVersion, {
+  totalSessionsInitiated = 0, sessionsWithCameraAndScan = 0, sessionsWithRecognition = 0,
+  sessionsWithContentShown = 0, sessionsWithCtaClick = 0, sessionsWithError = 0,
+  totalVisibleTrackingMs = 0, totalLosses = 0, uniqueEventsCount = 0,
+  avgLatencyMs = null, latencySamples = 0,
+} = {}) {
   const formatRate = (num, den) => {
     if (!den || den === 0) {
       return { value: null, formatted: 'No calculable (N/C)', numerator: num, denominator: den }
@@ -555,17 +523,13 @@ function computeMetricsFromEvents(campaignId, campaignVersion, events) {
     return { value: pct, formatted: `${pct}% (${num}/${den})`, numerator: num, denominator: den }
   }
 
-  const avgLatencyMs = recognitionLatenciesMs.length > 0
-    ? Math.round(recognitionLatenciesMs.reduce((a, b) => a + b, 0) / recognitionLatenciesMs.length)
-    : null
-
   const visibleMinutes = totalVisibleTrackingMs / 60000
   const lossesPerMinute = visibleMinutes > 0 ? Number((totalLosses / visibleMinutes).toFixed(2)) : null
 
   return {
     campaign_id: campaignId,
     campaign_version: campaignVersion,
-    uniqueEventsCount: events.length,
+    uniqueEventsCount,
     indicators: {
       sesionesConReconocimiento: {
         value: sessionsWithRecognition,
@@ -576,7 +540,7 @@ function computeMetricsFromEvents(campaignId, campaignVersion, events) {
       tiempoHastaReconocimientoMs: {
         value: avgLatencyMs,
         formatted: avgLatencyMs !== null ? `${(avgLatencyMs / 1000).toFixed(2)} s (${avgLatencyMs} ms)` : 'No calculable (N/C)',
-        samples: recognitionLatenciesMs.length,
+        samples: latencySamples,
       },
       seguimientoVisibleSegundos: {
         valueMs: totalVisibleTrackingMs,
@@ -597,4 +561,4 @@ function computeMetricsFromEvents(campaignId, campaignVersion, events) {
   }
 }
 
-module.exports = { PaseoAranjuezCoreService, computeMetricsFromEvents, parseDate }
+module.exports = { PaseoAranjuezCoreService, computeMetricsFromEvents, formatMetricReport, parseDate }

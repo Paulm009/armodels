@@ -1,9 +1,13 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
-const ADMIN_ROLE = import.meta.env.VITE_ADMIN_ROLE || 'DIRECCION_MARKETING'
+let adminToken = ''
 
 async function request(path, { method = 'GET', body, admin = false } = {}) {
   const headers = { 'Content-Type': 'application/json' }
-  if (admin) headers['x-admin-role'] = ADMIN_ROLE
+  if (admin) {
+    if (!adminToken) adminToken = window.prompt('Ingresa la clave de administración para guardar cambios:')?.trim() || ''
+    if (!adminToken) throw new Error('Se requiere la clave de administración para guardar cambios.')
+    headers.Authorization = `Bearer ${adminToken}`
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
@@ -11,6 +15,7 @@ async function request(path, { method = 'GET', body, admin = false } = {}) {
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
+    if (res.status === 401) adminToken = ''
     const err = new Error(data.error || `Error ${res.status}`)
     err.status = res.status
     throw err

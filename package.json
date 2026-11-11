@@ -4,28 +4,23 @@
   "description": "Sistema WebAR basado en Image Tracking (8th Wall) para la promocion interactiva de los locales comerciales de Paseo Aranjuez - Proyecto de Grado UCB Cochabamba",
   "author": "Nicolette Chalup",
   "license": "MIT",
-  "prisma": {
-    "seed": "node prisma/seed.js"
-  },
   "scripts": {
-    "dev": "concurrently -k -n API,WEB -c green,cyan \"node src/server/app.js\" \"vite\"",
-    "dev:api": "node src/server/app.js",
+    "dev": "npm run build && concurrently -k -n API,WEB -c green,cyan \"wrangler dev --port 8787\" \"vite\"",
+    "dev:api": "wrangler dev --port 8787",
     "dev:web": "vite",
-    "build": "vite build",
-    "start": "node src/server/app.js",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:deploy": "prisma migrate deploy",
-    "db:seed": "prisma db seed",
+    "build": "vite build && node scripts/copy-targets.mjs",
+    "start": "wrangler dev --port 8787",
+    "db:migrate": "wrangler d1 migrations apply armodels-db --local",
+    "db:deploy": "wrangler d1 migrations apply armodels-db --remote",
+    "db:seed": "wrangler d1 migrations apply armodels-db --local",
+    "db:seed:generate": "node scripts/generate-d1-seed.js",
+    "deploy": "wrangler whoami && npm run build && wrangler d1 migrations apply armodels-db --remote && wrangler deploy",
+    "deploy:check": "npm run build && wrangler deploy --dry-run",
     "prepare-targets": "node scripts/generate-image-targets.mjs",
     "generate-target-cli": "OVERWRITE_FILES=true npx @8thwall/image-target-cli@1.0.0",
-    "test": "node tests/istqb-validation.test.js"
+    "test": "npm run build && wrangler deploy --dry-run --outdir .test-worker && node tests/istqb-validation.test.js && node --test tests/worker.test.mjs"
   },
   "dependencies": {
-    "@prisma/client": "6.1.0",
-    "cors": "2.8.5",
-    "dotenv": "16.4.7",
-    "express": "4.21.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "three": "0.128.0"
@@ -34,8 +29,9 @@
     "@8thwall/image-target-cli": "1.0.0",
     "@vitejs/plugin-react": "4.3.4",
     "concurrently": "9.1.0",
-    "prisma": "6.1.0",
+    "miniflare": "5.20261110.1-beta",
     "sharp": "0.33.5",
-    "vite": "5.4.11"
+    "vite": "5.4.11",
+    "wrangler": "4.160.1"
   }
 }

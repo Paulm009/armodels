@@ -2,41 +2,34 @@
  * ============================================================================
  * SUITE DE VERIFICACIÓN Y VALIDACIÓN DEL SISTEMA (OE7 - Sección 2.11 ISTQB)
  * Pruebas unitarias, de integración y de reglas de reportes sobre el backend
- * real (Prisma + SQLite en una base de datos de prueba con migraciones).
+ * real (D1 en workerd/Miniflare, con migraciones y almacenamiento aislado).
  * ============================================================================
  */
 const assert = require('assert')
-const { execSync } = require('child_process')
+const fs = require('node:fs')
+const path = require('node:path')
+const { Miniflare, convertV4MiniflareOptions } = require('miniflare')
 const { PaseoAranjuezCoreService } = require('../src/server/core-service')
-const { newPrismaClient } = require('../src/server/db')
+const { D1Repository } = require('../src/server/d1-repository')
 const { build8thWallTargetMetadata } = require('../scripts/prepare-image-targets')
 
-const TEST_DATABASE_URL = 'file:./test.db'
-
-function prepareTestDatabase() {
-  // Aplica las migraciones a una base de datos SQLite de prueba aislada.
-  execSync('npx prisma migrate deploy', {
-    env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
-    stdio: 'ignore',
-    cwd: require('path').resolve(__dirname, '..'),
-  })
-  return newPrismaClient(TEST_DATABASE_URL)
-}
-
-async function resetDatabase(prisma) {
-  await prisma.evento.deleteMany()
-  await prisma.sesion.deleteMany()
-  await prisma.contenido.deleteMany()
-  await prisma.imagenObjetivo.deleteMany()
-  await prisma.campana.deleteMany()
-  await prisma.local.deleteMany()
-  await prisma.usuarioAdministrativo.deleteMany()
-}
-
 async function runValidationSuite() {
-  const prisma = prepareTestDatabase()
-  await resetDatabase(prisma)
-  const service = new PaseoAranjuezCoreService(prisma)
+  const runtime = new Miniflare(convertV4MiniflareOptions({
+    modules: true, script: 'export default { fetch() { return new Response("test") } }',
+    compatibilityDate: '2026-11-11', d1Databases: ['DB'],
+  }))
+  try {
+    await runD1Validation(runtime)
+  } finally {
+    await runtime.dispose()
+  }
+}
+
+async function runD1Validation(runtime) {
+  const db = await runtime.getD1Database('DB')
+  const schema = fs.readFileSync(path.join(__dirname, '../migrations/0001_initial.sql'), 'utf8')
+  await db.batch(schema.split(';').filter((sql) => sql.trim()).map((sql) => db.prepare(sql)))
+  const service = new PaseoAranjuezCoreService(new D1Repository(db))
 
   const results = []
   const recordTest = (id, name, fn) => {
@@ -230,7 +223,6 @@ async function runValidationSuite() {
     assert.strictEqual(visitorLookup.showPromotionalMedia, false)
   })
 
-  await prisma.$disconnect()
   console.log(`\nResumen ISTQB: ${results.filter((r) => r.status === 'PASSED').length}/${results.length} pruebas superadas.`)
 }
 

@@ -2,14 +2,37 @@
  * ============================================================================
  * SEED - Datos iniciales del Sistema WebAR Paseo Aranjuez
  * Usuarios RBAC, locales, campañas versionadas, imágenes objetivo y contenidos.
- * Idempotente: limpia las tablas antes de insertar.
+ * Genera SQL determinista para la migración D1 de demostración.
+ * No se conecta a ninguna base ni elimina datos.
  * ============================================================================
  */
 const path = require('path')
 const fs = require('fs')
-const { PrismaClient } = require('@prisma/client')
-
-const prisma = new PrismaClient()
+const statements = []
+const counters = {}
+const tables = {
+  usuarioAdministrativo: 'usuarios_administrativos', local: 'locales',
+  campana: 'campanas', imagenObjetivo: 'imagenes_objetivo', contenido: 'contenidos',
+}
+const sqlLiteral = (value) => {
+  if (value == null) return 'NULL'
+  if (value instanceof Date) return String(value.getTime())
+  if (typeof value === 'number') return String(value)
+  if (typeof value === 'boolean') return value ? '1' : '0'
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+const column = (key) => ({ ubicacion: 'ubicacion_mall', whatsapp: 'contacto_whatsapp' }[key]
+  || key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`))
+const seed = Object.fromEntries(Object.entries(tables).map(([model, table]) => [model, {
+  create({ data }) {
+    counters[table] = (counters[table] || 0) + 1
+    const id = ['locales', 'usuarios_administrativos'].includes(table)
+      ? `demo-${table}-${counters[table]}` : counters[table]
+    const row = { id, ...data }
+    statements.push(`INSERT INTO ${table} (${Object.keys(row).map(column).join(', ')}) VALUES (${Object.values(row).map(sqlLiteral).join(', ')});`)
+    return row
+  },
+}]))
 
 function readTargetMetadata(name) {
   const p = path.join(__dirname, '..', 'image-targets', `${name}.json`)
@@ -30,28 +53,19 @@ function mediaSize(name) {
 }
 
 async function main() {
-  console.log('Limpiando base de datos...')
-  await prisma.evento.deleteMany()
-  await prisma.sesion.deleteMany()
-  await prisma.contenido.deleteMany()
-  await prisma.imagenObjetivo.deleteMany()
-  await prisma.campana.deleteMany()
-  await prisma.local.deleteMany()
-  await prisma.usuarioAdministrativo.deleteMany()
-
   console.log('Insertando usuarios administrativos (RBAC)...')
-  const marketing = await prisma.usuarioAdministrativo.create({
+  const marketing = await seed.usuarioAdministrativo.create({
     data: { nombre: 'María Gutiérrez', cargo: 'Dirección de Marketing', rol: 'DIRECCION_MARKETING' },
   })
-  const gerencia = await prisma.usuarioAdministrativo.create({
+  const gerencia = await seed.usuarioAdministrativo.create({
     data: { nombre: 'Carlos Rojas', cargo: 'Gerencia General', rol: 'GERENCIA' },
   })
-  await prisma.usuarioAdministrativo.create({
+  await seed.usuarioAdministrativo.create({
     data: { nombre: 'Ana Beltrán', cargo: 'Community Manager', rol: 'COMMUNITY_MANAGER' },
   })
 
   console.log('Insertando locales comerciales...')
-  const cafeAltura = await prisma.local.create({
+  const cafeAltura = await seed.local.create({
     data: {
       nombre: 'Café Altura',
       rubro: 'Gastronomía',
@@ -60,7 +74,7 @@ async function main() {
       descripcion: 'Local ficticio para pruebas académicas.',
     },
   })
-  const iconic = await prisma.local.create({
+  const iconic = await seed.local.create({
     data: {
       nombre: 'iconicmodels',
       rubro: 'Gastronomía',
@@ -81,7 +95,7 @@ async function main() {
     const thumbnailPath = `image-targets/${targetName}_thumbnail.png`
     const originalPath = `image-targets/${targetName}_original.png`
 
-    const campana = await prisma.campana.create({
+    const campana = await seed.campana.create({
       data: {
         campaignId,
         version,
@@ -95,7 +109,7 @@ async function main() {
       },
     })
 
-    const objetivo = await prisma.imagenObjetivo.create({
+    const objetivo = await seed.imagenObjetivo.create({
       data: {
         targetId,
         version,
@@ -106,11 +120,11 @@ async function main() {
         originalPath,
         propertiesJson,
         contrastScore: 86,
-        qrAccessUrl: `https://localhost/?campaign=${campaignId}`,
+        qrAccessUrl: `/?campaign=${campaignId}`,
       },
     })
 
-    await prisma.contenido.create({
+    await seed.contenido.create({
       data: {
         campanaId: campana.id,
         imagenObjetivoId: objetivo.id,
@@ -222,14 +236,14 @@ async function main() {
     },
   })
 
-  console.log('Seed completado correctamente.')
+  const output = path.join(__dirname, '..', 'migrations', '0002_demo_data.sql')
+  fs.writeFileSync(output, '-- Datos de demostración. Wrangler aplica esta migración una sola vez.\n'
+    + statements.join('\n') + '\n')
+  console.log('Migración de demostración generada correctamente.')
 }
 
 main()
   .catch((e) => {
     console.error(e)
     process.exit(1)
-  })
-  .finally(async () => {
-    await prisma.$disconnect()
   })
