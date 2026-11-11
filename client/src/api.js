@@ -18,6 +18,20 @@ async function request(path, { method = 'GET', body, admin = false } = {}) {
   return data
 }
 
+async function uploadFile(path, file, field = 'file') {
+  const headers = { 'x-admin-role': ADMIN_ROLE }
+  const form = new FormData()
+  form.append(field, file)
+  const res = await fetch(`${API_BASE}${path}`, { method: 'POST', headers, body: form })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `Error ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 export const api = {
   health: () => request('/api/v1/health'),
 
@@ -31,6 +45,11 @@ export const api = {
     request(`/api/v1/admin/campaigns${allVersions ? '?versions=all' : ''}`),
   listCampaignVersions: (id) => request(`/api/v1/admin/campaigns/${id}/versions`),
   createCampaign: (data) => request('/api/v1/admin/campaigns', { method: 'POST', body: data, admin: true }),
+
+  // Image targets y medios AR
+  listImageTargets: () => request('/api/v1/admin/image-targets'),
+  createImageTarget: (file) => uploadFile('/api/v1/admin/image-targets', file),
+  uploadMedia: (file) => uploadFile('/api/v1/admin/media', file),
 
   // Público / WebAR
   getCampaign: (id) => request(`/api/v1/public/campaigns/${id}`),

@@ -11,13 +11,14 @@ const { getPrismaClient } = require('./db')
 
 const ALLOWED_ROLES_FOR_MUTATION = new Set(['DIRECCION_MARKETING', 'GERENCIA'])
 const ALLOWED_MIME_SIGNATURES = {
-  'image/png': [0x89, 0x50, 0x4e, 0x47],
-  'image/jpeg': [0xff, 0xd8, 0xff],
-  'video/mp4': [0x00, 0x00, 0x00], // ftyp box offset check
+  'image/png': { offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47] },
+  'image/jpeg': { offset: 0, bytes: [0xff, 0xd8, 0xff] },
+  'video/mp4': { offset: 4, bytes: [0x66, 0x74, 0x79, 0x70] }, // 'ftyp'
 }
 
 const CAMPAIGN_STATES = ['EN_PREPARACION', 'PUBLICADA', 'ARCHIVADA', 'VENCIDA']
 const TARGETS_DIR = path.resolve(__dirname, '..', '..', 'image-targets')
+const MEDIA_DIR = path.resolve(__dirname, '..', '..', 'public', 'media')
 
 function parseDate(value) {
   if (value instanceof Date) return value
@@ -62,9 +63,9 @@ class PaseoAranjuezCoreService {
     if (!ALLOWED_MIME_SIGNATURES[mimeType]) {
       throw new Error(`Tipo MIME no permitido: ${mimeType}.`)
     }
-    const expectedSig = ALLOWED_MIME_SIGNATURES[mimeType]
-    if (Array.isArray(magicBytes)) {
-      const matches = expectedSig.every((byte, idx) => magicBytes[idx] === byte)
+    const spec = ALLOWED_MIME_SIGNATURES[mimeType]
+    if (Array.isArray(magicBytes) && magicBytes.length >= spec.offset + spec.bytes.length) {
+      const matches = spec.bytes.every((byte, idx) => magicBytes[spec.offset + idx] === byte)
       if (!matches) {
         throw new Error(`La firma binaria del archivo '${filename}' no coincide con el tipo declarado (${mimeType}).`)
       }
@@ -270,6 +271,136 @@ class PaseoAranjuezCoreService {
       include: { local: true, imagenes: true, contenidos: true },
     })
     return campanas.map(serializeCampaign)
+  }
+
+  /* ==================== IMAGE TARGETS Y MEDIOS AR ==================== */
+
+  /**
+   * Lista los image targets 8th Wall disponibles en image-targets/.
+   * Cada entrada expone name, type, properties y las rutas de sus recursos
+   * para que el panel pueda mostrar una vista previa y permitir su selección.
+   */
+  async listImageTargets() {
+    let files = []
+    try {
+      files = fs.readdirSync(TARGETS_DIR)
+    } catch {
+      return []
+    }
+    const targets = []
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue
+      const name = file.replace(/\.json$/, '')
+      try {
+        const raw = JSON.parse(fs.readFileSync(path.join(TARGETS_DIR, file), 'utf-8'))
+        targets.push({
+          name: raw.name || name,
+          type: raw.type || 'PLANAR',
+          properties: raw.properties || {},
+          imagePath: raw.imagePath || `image-targets/${name}_luminance.png`,
+          resources: raw.resources || {},
+          thumbnail: `image-targets/${(raw.resources && raw.resources.thumbnailImage) || `${name}_thumbnail.png`}`,
+        })
+      } catch {
+        /* archivo de metadata corrupto, se omite */
+      }
+    }
+    return targets.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  /**
+   * Genera un nuevo image target 8th Wall a partir de una imagen subida.
+   * Utiliza el CLI oficial (@8thwall/image-target-cli) para producir el JSON
+   * de metadata y los recursos (luminancia, miniatura, recorte y original).
+   */
+  async createImageTarget({ buffer, mimeType, sizeBytes, originalName }) {
+    const safeBase = this.sanitizeFilename(originalName || 'afiche').replace(/\.[^.]+$/, '') || 'afiche'
+    const name = `target_${Date.now()}_${safeBase}`
+    const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/png' ? 'png' : null
+    if (!extension) {
+      throw new Error(`Formato de afiche no soportado (${mimeType}). Usa PNG o JPG.`)
+    }
+
+    const sharp = await import('sharp').then((m) => m.default)
+    const image = sharp(buffer)
+    const meta = await image.metadata()
+    const magicBytes = Array.from(buffer.subarray(0, 16))
+
+    this.validateUploadedAsset({
+      filename: `${name}.${extension}`,
+      mimeType,
+      sizeBytes,
+      magicBytes,
+      width: meta.width,
+      height: meta.height,
+    })
+
+    const { applyCrop } = await import('@8thwall/image-target-cli/src/apply.js')
+    const { getDefaultCrop } = await import('@8thwall/image-target-cli/src/crop.js')
+
+    const sourceIsLandscape = meta.width >= meta.height
+    const crop = { type: 'PLANAR', geometry: getDefaultCrop(meta, sourceIsLandscape) }
+    await applyCrop(image, crop, TARGETS_DIR, name, true)
+
+    const dataPath = path.join(TARGETS_DIR, `${name}.json`)
+    const data = JSON.parse(fs.readFileSync(dataPath, 'utf-8'))
+    return {
+      name: data.name || name,
+      type: data.type || 'PLANAR',
+      properties: data.properties || {},
+      imagePath: data.imagePath,
+      resources: data.resources || {},
+      thumbnail: `image-targets/${(data.resources && data.resources.thumbnailImage) || `${name}_thumbnail.png`}`,
+    }
+  }
+
+  /**
+   * Almacena un medio AR (imagen o video MP4) en public/media/ y devuelve la
+   * URL pública para referenciarlo desde el contenido de la campaña.
+   */
+  async storeMedia({ buffer, mimeType, sizeBytes, originalName }) {
+    const extension = mimeType === 'image/png' ? 'png'
+      : mimeType === 'image/jpeg' ? 'jpg'
+      : mimeType === 'video/mp4' ? 'mp4'
+      : null
+    if (!extension) {
+      throw new Error(`Formato de contenido no soportado (${mimeType}). Usa PNG, JPG o MP4.`)
+    }
+
+    const filename = `${Date.now()}_${this.sanitizeFilename(originalName || `contenido.${extension}`)}`
+    const magicBytes = Array.from(buffer.subarray(0, 16))
+
+    const extra = {}
+    if (mimeType.startsWith('image/')) {
+      const sharp = await import('sharp').then((m) => m.default)
+      const meta = await sharp(buffer).metadata()
+      extra.width = meta.width
+      extra.height = meta.height
+    }
+
+    this.validateUploadedAsset({
+      filename,
+      mimeType,
+      sizeBytes,
+      magicBytes,
+      width: extra.width,
+      height: extra.height,
+    })
+
+    await fs.promises.mkdir(MEDIA_DIR, { recursive: true })
+    await fs.promises.writeFile(path.join(MEDIA_DIR, filename), buffer)
+
+    return {
+      url: `/media/${filename}`,
+      filename,
+      mimeType,
+      sizeBytes,
+    }
+  }
+
+  sanitizeFilename(value) {
+    const safe = String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_').toLowerCase()
+    return safe.replace(/^_+|_+$/g, '') || 'archivo'
   }
 
   async getActiveCampaignForVisitor(campaignId, referenceDateStr = null) {

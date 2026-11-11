@@ -50,9 +50,14 @@ export default function WebARModal({ campaign, onClose, onEvent }) {
     [closeInterval]
   )
 
-  const onTelemetry = useCallback(() => {
-    onEvent && onEvent()
+  const onEventRef = useRef(onEvent)
+  useEffect(() => {
+    onEventRef.current = onEvent
   }, [onEvent])
+
+  const onTelemetry = useCallback(() => {
+    if (onEventRef.current) onEventRef.current()
+  }, [])
 
   useEffect(() => {
     let disposed = false

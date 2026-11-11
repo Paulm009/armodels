@@ -7,12 +7,18 @@ const path = require('path')
 const fs = require('fs')
 const express = require('express')
 const cors = require('cors')
+const multer = require('multer')
 const { PaseoAranjuezCoreService } = require('./core-service')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const CLIENT_DIST = path.join(ROOT, 'client', 'dist')
 const TARGETS_DIR = path.join(ROOT, 'image-targets')
 const MEDIA_DIR = path.join(ROOT, 'public', 'media')
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+})
 
 function getUserRole(req) {
   return req.headers['x-admin-role'] || 'VISITANTE_PUBLICO'
@@ -107,6 +113,48 @@ function createServer(service = new PaseoAranjuezCoreService()) {
       return res.status(200).json(versions)
     } catch (err) {
       return res.status(500).json({ error: err.message })
+    }
+  })
+
+  // ============ IMAGE TARGETS Y MEDIOS AR ============
+  app.get('/api/v1/admin/image-targets', async (req, res) => {
+    try {
+      const targets = await service.listImageTargets()
+      return res.status(200).json(targets)
+    } catch (err) {
+      return res.status(500).json({ error: err.message })
+    }
+  })
+
+  app.post('/api/v1/admin/image-targets', upload.single('file'), async (req, res) => {
+    try {
+      service.authorizeAdminOperation(getUserRole(req), 'createImageTarget')
+      if (!req.file) throw new Error('No se recibió ningún archivo de afiche.')
+      const target = await service.createImageTarget({
+        buffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        sizeBytes: req.file.size,
+        originalName: req.file.originalname,
+      })
+      return res.status(201).json(target)
+    } catch (err) {
+      return res.status(err.statusCode || 400).json({ error: err.message })
+    }
+  })
+
+  app.post('/api/v1/admin/media', upload.single('file'), async (req, res) => {
+    try {
+      service.authorizeAdminOperation(getUserRole(req), 'storeMedia')
+      if (!req.file) throw new Error('No se recibió ningún archivo de contenido.')
+      const media = await service.storeMedia({
+        buffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        sizeBytes: req.file.size,
+        originalName: req.file.originalname,
+      })
+      return res.status(201).json(media)
+    } catch (err) {
+      return res.status(err.statusCode || 400).json({ error: err.message })
     }
   })
 

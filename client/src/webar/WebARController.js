@@ -71,6 +71,18 @@ export class WebARController {
       throw new Error('8th Wall admite un máximo de 32 objetivos activos simultáneos (Sección 2.5.6).')
     }
 
+    // La cámara requiere un contexto seguro (HTTPS o localhost) y soporte de
+    // getUserMedia. Sin esto, la experiencia no puede arrancar y es mejor
+    // informarlo de forma clara en lugar de quedarse en "Iniciando cámara…".
+    if (!this.isCameraAvailable()) {
+      this.setState(WEBAR_STATES.FALLO_RECUPERABLE, {
+        errorType: 'PERMISSION_OR_CAMERA_ERROR',
+        message: 'No se detectó una cámara disponible o el navegador no permite su uso. Para probar desde un celular se requiere HTTPS (usa un túnel tipo ngrok) o localhost.',
+      })
+      this.recordEvent('SESSION_ERROR', { errorCategory: 'PERMISSION_ERROR', reason: 'GET_USER_MEDIA_UNAVAILABLE' })
+      return false
+    }
+
     XR8.XrController.configure({
       disableWorldTracking: true,
       imageTargetData: this.imageTargets,
@@ -93,9 +105,41 @@ export class WebARController {
     XR8.addCameraPipelineModules(modules)
 
     this.recordEvent('SESSION_OPEN', { accessMechanism: 'QR_CODE' })
-    XR8.run({ canvas })
+
+    // `allowedDevices: ANY` es imprescindible: por defecto el motor solo
+    // admite MOBILE_AND_HEADSETS, por lo que la cámara de escritorio nunca
+    // arranca si no se indica explícitamente.
+    const runConfig = { canvas }
+    if (XR8.XrConfig && typeof XR8.XrConfig.device === 'function') {
+      runConfig.allowedDevices = XR8.XrConfig.device().ANY
+    }
+    // `runOnCameraStatusChange` avisa de fallos de cámara (sin cámara,
+    // permiso denegado, contexto no seguro) para no quedarse en "Iniciando…".
+    runConfig.runOnCameraStatusChange = ({ status, reason }) => {
+      if (status !== 'failed') return
+      const reasonMessages = {
+        DENY_CAMERA: 'Permiso de cámara denegado. Actívalo en los permisos del navegador.',
+        DENY_MICROPHONE: 'Permiso de micrófono denegado.',
+        NO_CAMERA: 'No se detectó ninguna cámara en este dispositivo.',
+        NOT_FOUND: 'No se detectó ninguna cámara en este dispositivo.',
+      }
+      this.setState(WEBAR_STATES.FALLO_RECUPERABLE, {
+        errorType: 'PERMISSION_OR_CAMERA_ERROR',
+        message: reasonMessages[reason] || 'No se pudo acceder a la cámara. Verifica los permisos del navegador o usa HTTPS (o localhost) desde un celular.',
+      })
+      this.recordEvent('SESSION_ERROR', { errorCategory: 'PERMISSION_ERROR', reason })
+    }
+    XR8.run(runConfig)
     this.running = true
     return true
+  }
+
+  isCameraAvailable() {
+    return (
+      typeof navigator !== 'undefined' &&
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === 'function'
+    )
   }
 
   createCustomPipelineModule() {

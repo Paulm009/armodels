@@ -181,7 +181,7 @@ export default function App() {
         <WebARModal
           campaign={webar.campaign}
           onClose={() => setWebar(null)}
-          onEvent={() => refresh()}
+          onEvent={refresh}
         />
       )}
 
