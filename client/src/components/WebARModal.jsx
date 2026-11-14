@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
-import { WebARController, WEBAR_STATES } from '../webar/WebARController.js'
+import { WebARController, WEBAR_STATES, cameraPermissionMessage } from '../webar/WebARController.js'
 import { statusLabel } from '../lib.js'
 
+const PHASE = {
+  INTRO: 'intro',
+  STARTING: 'starting',
+  ACTIVE: 'active',
+  ERROR: 'error',
+}
+
 export default function WebARModal({ campaign, onClose, onEvent }) {
-  const [status, setStatus] = useState('Iniciando cámara…')
+  const [phase, setPhase] = useState(PHASE.INTRO)
+  const [status, setStatus] = useState('')
   const [tracked, setTracked] = useState(false)
   const [error, setError] = useState(null)
   const [infoOpen, setInfoOpen] = useState(true)
@@ -29,6 +37,7 @@ export default function WebARModal({ campaign, onClose, onEvent }) {
     } else if (state === WEBAR_STATES.FALLO_RECUPERABLE) {
       setTracked(false)
       setError(details.message || 'No se pudo acceder a la cámara.')
+      setPhase(PHASE.ERROR)
     } else if (state === WEBAR_STATES.FINALIZACION) {
       setTracked(false)
     }
@@ -43,37 +52,52 @@ export default function WebARModal({ campaign, onClose, onEvent }) {
     if (onEventRef.current) onEventRef.current()
   }, [])
 
-  useEffect(() => {
-    let disposed = false
-
-    async function init() {
-      try {
-        const data = await api.getCampaign(campaign.campaign_id)
-        if (disposed) return
-        if (data.status !== 'ACTIVE' || !data.showPromotionalMedia) {
-          setError(data.message || 'La campaña no está disponible para mostrar contenido.')
-          setStatus(data.status === 'EXPIRED' ? 'Campaña finalizada' : 'Campaña no publicada')
-          return
-        }
-        const canvas = canvasRef.current
-        if (!canvas) return
-        const controller = new WebARController({
-          campaign,
-          imageTargets: data.imageTargetData || [],
-          onStateChange,
-          onTelemetry,
-        })
-        controllerRef.current = controller
-        await controller.start(canvas)
-      } catch (err) {
-        if (!disposed) setError(err.message)
+  const startExperience = useCallback(async () => {
+    setPhase(PHASE.STARTING)
+    setError(null)
+    try {
+      const data = await api.getCampaign(campaign.campaign_id)
+      if (data.status !== 'ACTIVE' || !data.showPromotionalMedia) {
+        setError(data.message || 'La campaña no está disponible para mostrar contenido.')
+        setStatus(data.status === 'EXPIRED' ? 'Campaña finalizada' : 'Campaña no publicada')
+        setPhase(PHASE.ERROR)
+        return
       }
+
+      const controller = new WebARController({
+        campaign,
+        imageTargets: data.imageTargetData || [],
+        onStateChange,
+        onTelemetry,
+      })
+      controllerRef.current = controller
+
+      // Permiso explícito dentro del gesto del usuario (máxima fiabilidad en iOS/Android).
+      const perm = await controller.requestCameraPermission()
+      if (!perm.granted) {
+        setError(cameraPermissionMessage(perm.reason))
+        setPhase(PHASE.ERROR)
+        return
+      }
+
+      const canvas = canvasRef.current
+      if (!canvas) {
+        setError('No se encontró el lienzo de cámara.')
+        setPhase(PHASE.ERROR)
+        return
+      }
+
+      const ok = await controller.start(canvas)
+      if (!ok) return // start() ya emite FALLO_RECUPERABLE con el mensaje.
+      setPhase(PHASE.ACTIVE)
+    } catch (err) {
+      setError(err.message || 'Error al iniciar la experiencia.')
+      setPhase(PHASE.ERROR)
     }
+  }, [campaign, onStateChange, onTelemetry])
 
-    init()
-
+  useEffect(() => {
     return () => {
-      disposed = true
       if (controllerRef.current) {
         try {
           controllerRef.current.stop()
@@ -83,7 +107,7 @@ export default function WebARModal({ campaign, onClose, onEvent }) {
         controllerRef.current = null
       }
     }
-  }, [campaign, onStateChange, onTelemetry])
+  }, [])
 
   const handleCta = () => {
     controllerRef.current?.triggerCTA(content?.cta_primaria_label || 'Ver condiciones')
@@ -125,13 +149,15 @@ export default function WebARModal({ campaign, onClose, onEvent }) {
           </p>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => setInfoOpen((v) => !v)}
-            className="shrink-0 h-9 px-3 rounded-lg flex items-center gap-1.5 text-sm font-semibold text-white/80 hover:bg-white/10 lg:text-[#657069] lg:hover:bg-[#f4f3ee]"
-            aria-label={infoOpen ? 'Ocultar información' : 'Mostrar información'}
-          >
-            {infoOpen ? 'Ocultar info' : 'Info'}
-          </button>
+          {phase === PHASE.ACTIVE && (
+            <button
+              onClick={() => setInfoOpen((v) => !v)}
+              className="shrink-0 h-9 px-3 rounded-lg flex items-center gap-1.5 text-sm font-semibold text-white/80 hover:bg-white/10 lg:text-[#657069] lg:hover:bg-[#f4f3ee]"
+              aria-label={infoOpen ? 'Ocultar información' : 'Mostrar información'}
+            >
+              {infoOpen ? 'Ocultar info' : 'Info'}
+            </button>
+          )}
           <button
             onClick={onClose}
             className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-white/80 hover:bg-white/10 lg:text-[#657069] lg:hover:bg-[#f4f3ee]"
@@ -147,21 +173,60 @@ export default function WebARModal({ campaign, onClose, onEvent }) {
         {/* Cámara */}
         <div className="relative flex-1 min-h-0 bg-black overflow-hidden">
           <canvas ref={canvasRef} className="webar-canvas" />
-          {error && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center p-6 bg-black/70 text-white text-sm text-center">
-              {error}
+
+          {phase === PHASE.INTRO && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center p-6">
+              <div className="max-w-sm w-full card p-6 text-center space-y-4">
+                <div className="space-y-1">
+                  <div className="font-display font-extrabold text-lg text-[#18241e]">{campaign.nombre}</div>
+                  <p className="text-sm text-[#657069]">
+                    Apunta la cámara al afiche del local para ver la promoción en realidad aumentada.
+                  </p>
+                </div>
+                <button onClick={startExperience} className="btn-primary w-full py-3 rounded-xl text-sm font-bold">
+                  Iniciar experiencia AR
+                </button>
+                <p className="text-xs text-[#657069]">
+                  Se te pedirá permiso para usar la cámara trasera del dispositivo.
+                </p>
+              </div>
             </div>
           )}
 
-          <div className="absolute top-3 left-3 z-20 flex items-center gap-2">
-            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold text-white bg-black/60 ${tracked ? 'pulse-dot' : ''}`}>
-              {tracked ? '● Objetivo seguido' : '● ' + status}
-            </span>
-          </div>
+          {phase === PHASE.STARTING && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-black/70 text-white">
+              <div className="webar-spinner" />
+              <p className="text-sm text-center px-6">Solicitando acceso a la cámara…</p>
+            </div>
+          )}
+
+          {phase === PHASE.ERROR && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center p-6">
+              <div className="max-w-sm w-full card p-6 text-center space-y-4">
+                <p className="text-sm text-[#18241e]">{error || 'No se pudo iniciar la experiencia.'}</p>
+                <div className="flex items-center justify-center gap-2">
+                  <button onClick={startExperience} className="btn-primary px-5 py-2.5 rounded-xl text-sm font-bold">
+                    Reintentar
+                  </button>
+                  <button onClick={onClose} className="px-5 py-2.5 rounded-xl text-sm font-semibold text-[#657069] hover:bg-[#f4f3ee]">
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {phase === PHASE.ACTIVE && (
+            <div className="absolute top-3 left-3 z-20 flex items-center gap-2">
+              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold text-white bg-black/60 ${tracked ? 'pulse-dot' : ''}`}>
+                {tracked ? '● Objetivo seguido' : '● ' + status}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Panel de información: hoja inferior en móvil, panel lateral en escritorio */}
-        {infoOpen && (
+        {phase === PHASE.ACTIVE && infoOpen && (
           <aside className="absolute inset-x-0 bottom-0 z-30 lg:static lg:z-auto lg:w-80 lg:shrink-0 lg:bg-white lg:border-l lg:border-[#e6e4dc]">
             <div
               className="webar-sheet flex flex-col bg-[#18241e]/95 text-white backdrop-blur lg:bg-transparent lg:text-inherit rounded-t-2xl lg:rounded-none"

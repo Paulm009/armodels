@@ -3,6 +3,10 @@
  * CONTROLADOR WEBAR CON 8TH WALL (Image Tracking) - PASEO ARANJUEZ
  * Máquina de estados (Figura 2.1), jerarquía Three.js, telemetría sendBeacon.
  * Soporta contenido de tipo video (VideoTexture) o imagen (Texture).
+ *
+ * Cámara: se solicita explícitamente permiso con gesto del usuario, se fuerza
+ * la cámara trasera (mayor calidad) y se pide resolución HD nativa con
+ * degradación elegante (sin filtro, sin pixelado). Se evita el chunk de SLAM.
  * ============================================================================
  */
 import * as THREE from 'three'
@@ -51,10 +55,38 @@ export class WebARController {
     this.onStateChange(nextState, details)
   }
 
+  /**
+   * Solicita permiso de cámara de forma explícita (dentro de un gesto del
+   * usuario). Devuelve `{ granted, reason }`. Al concederse, se libera el
+   * stream de prueba; el motor pedirá el suyo sin volver a mostrar el diálogo.
+   */
+  async requestCameraPermission() {
+    if (!this.isCameraAvailable()) {
+      return { granted: false, reason: 'NO_CAMERA' }
+    }
+    applyNativeCameraPatch()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' } },
+      })
+      stream.getTracks().forEach((track) => track.stop())
+      return { granted: true, reason: null }
+    } catch (err) {
+      const reason = classifyCameraError(err)
+      this.recordEvent('SESSION_ERROR', {
+        errorCategory: 'PERMISSION_ERROR',
+        reason,
+        detail: String((err && err.message) || err),
+      })
+      return { granted: false, reason }
+    }
+  }
+
   async start(canvas) {
     this.canvas = canvas
     if (!window.THREE) window.THREE = THREE
-    applyHDCameraPatch()
+    applyNativeCameraPatch()
 
     try {
       await load8thWallEngine()
@@ -91,16 +123,14 @@ export class WebARController {
 
     document.addEventListener('visibilitychange', this.visibilityHandler)
 
-    const modules = [XR8.GlTextureRenderer.pipelineModule(), XR8.Threejs.pipelineModule(), XR8.XrController.pipelineModule()]
-    if (window.XRExtras) {
-      if (XRExtrasLoadingAvailable()) {
-        modules.unshift(
-          window.XRExtras.AlmostThere.pipelineModule(),
-          window.XRExtras.Loading.pipelineModule(),
-          window.XRExtras.RuntimeError.pipelineModule()
-        )
-      }
-    }
+    // Pipeline mínimo para Image Tracking: renderizador de textura + escena
+    // Three.js + controlador XR. Sin módulos de "carga" (XRExtras) que ralentizan
+    // el arranque en móvil.
+    const modules = [
+      XR8.GlTextureRenderer.pipelineModule(),
+      XR8.Threejs.pipelineModule(),
+      XR8.XrController.pipelineModule(),
+    ]
     modules.push(this.createCustomPipelineModule())
 
     XR8.addCameraPipelineModules(modules)
@@ -118,15 +148,9 @@ export class WebARController {
     // permiso denegado, contexto no seguro) para no quedarse en "Iniciando…".
     runConfig.runOnCameraStatusChange = ({ status, reason }) => {
       if (status !== 'failed') return
-      const reasonMessages = {
-        DENY_CAMERA: 'Permiso de cámara denegado. Actívalo en los permisos del navegador.',
-        DENY_MICROPHONE: 'Permiso de micrófono denegado.',
-        NO_CAMERA: 'No se detectó ninguna cámara en este dispositivo.',
-        NOT_FOUND: 'No se detectó ninguna cámara en este dispositivo.',
-      }
       this.setState(WEBAR_STATES.FALLO_RECUPERABLE, {
         errorType: 'PERMISSION_OR_CAMERA_ERROR',
-        message: reasonMessages[reason] || 'No se pudo acceder a la cámara. Verifica los permisos del navegador o usa HTTPS (o localhost) desde un celular.',
+        message: cameraPermissionMessage(reason),
       })
       this.recordEvent('SESSION_ERROR', { errorCategory: 'PERMISSION_ERROR', reason })
     }
@@ -376,42 +400,87 @@ export class WebARController {
   }
 }
 
-function XRExtrasLoadingAvailable() {
-  return (
-    window.XRExtras &&
-    window.XRExtras.AlmostThere &&
-    window.XRExtras.Loading &&
-    window.XRExtras.RuntimeError
-  )
-}
+/* ============================================================================
+ * CÁMARA NATIVA EN HD (cámara trasera + degradación elegante)
+ * ============================================================================ */
 
-// El motor open-source fija la resolución de cámara (hasta ~960×720 en Android,
-// ~720p en iOS). Se fuerza una resolución alta (ideal 1920×1080, degradando de
-// forma elegante) para que la imagen se vea nítida también de lejos.
-let hdCameraPatched = false
+let cameraPatchApplied = false
 
-function applyHDCameraPatch() {
-  if (hdCameraPatched) return
+function applyNativeCameraPatch() {
+  if (cameraPatchApplied) return
   if (typeof navigator === 'undefined') return
   const md = navigator.mediaDevices
   if (!md || typeof md.getUserMedia !== 'function') return
-  hdCameraPatched = true
+  cameraPatchApplied = true
 
   const original = md.getUserMedia.bind(md)
-  md.getUserMedia = (constraints) => {
-    try {
-      const video = constraints && constraints.video
-      if (video && typeof video === 'object' && !Array.isArray(video)) {
-        const next = { ...video }
-        delete next.width
-        delete next.height
-        next.width = { ideal: 1920 }
-        next.height = { ideal: 1080 }
-        constraints = { ...constraints, video: next }
-      }
-    } catch {
-      /* noop */
-    }
-    return original(constraints)
+  md.getUserMedia = function (constraints) {
+    if (!constraints || constraints.video === undefined) return original(constraints)
+    return acquireWithFallback(original, constraints)
   }
+}
+
+/**
+ * Intenta obtener el stream de cámara probando varias configuraciones, desde la
+ * de mayor calidad (trasera 1920×1080 @30fps) hasta la más permisiva, para no
+ * fallar nunca por una restricción no soportada.
+ */
+async function acquireWithFallback(original, constraints) {
+  const video = constraints.video
+  const base = video && typeof video === 'object' && !Array.isArray(video) ? { ...video } : {}
+
+  const attempts = [
+    { ...base, facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+    { ...base, facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+    { ...base, facingMode: { ideal: 'environment' } },
+    base,
+  ]
+
+  let lastError = null
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      return await original({ ...constraints, video: attempts[i] })
+    } catch (err) {
+      lastError = err
+      if (!isRetryableCameraError(err)) throw err
+    }
+  }
+  // Último recurso: respetar exactamente lo que pidió el motor.
+  return original(constraints)
+}
+
+function isRetryableCameraError(err) {
+  const name = err && err.name ? err.name : ''
+  return (
+    name === 'OverconstrainedError' ||
+    name === 'ConstraintNotSatisfiedError' ||
+    name === 'NotFoundError' ||
+    name === 'DevicesNotFoundError'
+  )
+}
+
+function classifyCameraError(err) {
+  const name = err && err.name ? err.name : ''
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+    return 'DENY_CAMERA'
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return 'NO_CAMERA'
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
+    return 'CAMERA_BUSY'
+  }
+  return 'UNKNOWN'
+}
+
+export function cameraPermissionMessage(reason) {
+  const messages = {
+    DENY_CAMERA: 'Permiso de cámara denegado. Actívalo en los permisos del navegador y vuelve a intentarlo.',
+    DENY_MICROPHONE: 'Permiso de micrófono denegado.',
+    NO_CAMERA: 'No se detectó ninguna cámara en este dispositivo.',
+    NOT_FOUND: 'No se detectó ninguna cámara en este dispositivo.',
+    CAMERA_BUSY: 'La cámara está ocupada por otra aplicación. Ciérrala e inténtalo de nuevo.',
+    UNKNOWN: 'No se pudo acceder a la cámara. Verifica los permisos del navegador o usa HTTPS (o localhost) desde un celular.',
+  }
+  return messages[reason] || messages.UNKNOWN
 }
