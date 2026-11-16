@@ -9,11 +9,30 @@ let enginePromise = null
 
 const LOAD_TIMEOUT_MS = 30000
 
+// El `XrController` (el que hace Image Tracking) NO viene en el bundle base del
+// motor: se publica como chunk aparte (`xr-tracking.js`). Si no se precarga,
+// `XR8.XrController` queda en `null` y `XrController.configure()` lanza
+// "null is not an object (evaluating 't.XrController.configure')".
+const TRACKING_CHUNK = 'slam'
+
+async function ensureTrackingChunk(XR8) {
+  if (!XR8) throw new Error('No se pudo inicializar el motor 8th Wall.')
+  if (XR8.XrController) return XR8
+  if (typeof XR8.loadChunk !== 'function') {
+    throw new Error('El motor 8th Wall no expone el controlador de tracking.')
+  }
+  await XR8.loadChunk({ name: TRACKING_CHUNK })
+  if (!XR8.XrController) {
+    throw new Error('El controlador de tracking de 8th Wall no pudo inicializarse.')
+  }
+  return XR8
+}
+
 export function load8thWallEngine() {
   if (typeof window === 'undefined') return Promise.reject(new Error('Sin entorno de navegador.'))
   if (enginePromise) return enginePromise
   if (window.XR8) {
-    enginePromise = Promise.resolve(window.XR8)
+    enginePromise = ensureTrackingChunk(window.XR8)
     return enginePromise
   }
 
@@ -45,9 +64,9 @@ export function load8thWallEngine() {
     script.async = true
     script.crossOrigin = 'anonymous'
     script.setAttribute('data-xr-engine', 'true')
-    // NOTA: no pre-cargamos el chunk de SLAM (`data-preload-chunks="slam"`).
-    // Usamos únicamente Image Targets (disableWorldTracking), por lo que omitir
-    // el wasm de SLAM acelera notablemente la carga en móvil.
+    // `XrController` viaja en el chunk "slam" (es el mismo que resuelve Image
+    // Tracking). Hay que precargarlo o el motor arranca sin controlador.
+    script.setAttribute('data-preload-chunks', TRACKING_CHUNK)
     script.src = src
     script.onerror = onError
 
@@ -60,7 +79,7 @@ export function load8thWallEngine() {
         finish(reject, new Error('Tiempo de espera agotado al cargar el motor 8th Wall.'))
       }
     }, LOAD_TIMEOUT_MS)
-  })
+  }).then(ensureTrackingChunk)
 
   return enginePromise
 }

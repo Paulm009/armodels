@@ -100,6 +100,14 @@ export class WebARController {
     }
 
     const XR8 = window.XR8
+    if (!XR8 || !XR8.XrController) {
+      this.setState(WEBAR_STATES.FALLO_RECUPERABLE, {
+        errorType: 'RESOURCE_ERROR',
+        message: 'El motor de realidad aumentada no pudo inicializar el seguimiento de imágenes. Vuelve a intentarlo; si el problema persiste, abre la página en Safari o Chrome actualizado.',
+      })
+      this.recordEvent('SESSION_ERROR', { errorCategory: 'RESOURCE_ERROR', reason: 'XR_CONTROLLER_UNAVAILABLE' })
+      return false
+    }
     if (this.imageTargets.length > 32) {
       throw new Error('8th Wall admite un máximo de 32 objetivos activos simultáneos (Sección 2.5.6).')
     }
