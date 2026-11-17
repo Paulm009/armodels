@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   --bg-cream: #f8f7f3;
   --bg-card: #ffffff;

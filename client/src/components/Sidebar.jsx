@@ -6,7 +6,7 @@ const NAV_ITEMS = [
   { key: 'howtotest', label: 'Cómo probar', icon: '?' },
 ]
 
-export default function Sidebar({ view, onNavigate }) {
+export default function Sidebar({ view, onNavigate, user, onLogout }) {
   return (
     <aside className="fixed inset-y-0 left-0 w-64 bg-white border-r border-[#e6e4dc] hidden lg:flex flex-col z-40">
       <div className="px-5 py-6 border-b border-[#e6e4dc]">
@@ -33,8 +33,20 @@ export default function Sidebar({ view, onNavigate }) {
         ))}
       </nav>
 
-      <div className="px-5 py-4 border-t border-[#e6e4dc] text-xs text-[#657069]">
-        Proyecto de grado · UCB
+      <div className="px-5 py-4 border-t border-[#e6e4dc] space-y-2">
+        {user && (
+          <div className="text-xs text-[#657069]">
+            <div className="font-semibold text-[#18241e] truncate">{user.nombre || user.usuario}</div>
+            <div className="truncate">{user.rol}</div>
+          </div>
+        )}
+        <button
+          onClick={onLogout}
+          className="w-full px-3 py-2 rounded-xl border border-[#dcdad2] text-xs font-semibold text-[#4a5750] hover:bg-[#f4f3ee]"
+        >
+          Cerrar sesión
+        </button>
+        <div className="text-[11px] text-[#657069]">Proyecto de grado · UCB</div>
       </div>
     </aside>
   )

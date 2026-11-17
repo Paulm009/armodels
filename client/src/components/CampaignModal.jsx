@@ -14,6 +14,7 @@ const EMPTY_FORM = {
   target_name: 'cafe_altura',
   media_url: '/media/promo_cafe_altura.png',
   media_mime_type: 'image/png',
+  media_size_bytes: 1024,
 }
 
 function inferMediaMime(url) {
@@ -41,6 +42,7 @@ export default function CampaignModal({ editing, locales, onClose, onSaved, show
           target_name: editing.targets?.[0]?.nombre_tecnico || 'cafe_altura',
           media_url: editing.content?.media_url || '/media/promo_cafe_altura.png',
           media_mime_type: editing.content?.media_mime_type || 'image/png',
+          media_size_bytes: editing.content?.media_size_bytes || 1024,
         }
       : EMPTY_FORM
   )
@@ -116,7 +118,12 @@ export default function CampaignModal({ editing, locales, onClose, onSaved, show
     setErr(null)
     try {
       const media = await api.uploadMedia(file)
-      setForm((f) => ({ ...f, media_url: media.url, media_mime_type: media.mimeType }))
+      setForm((f) => ({
+        ...f,
+        media_url: media.url,
+        media_mime_type: media.mimeType,
+        media_size_bytes: media.sizeBytes || file.size,
+      }))
       showToast && showToast('Contenido AR subido correctamente.')
     } catch (e) {
       setErr(e.message)
@@ -149,19 +156,16 @@ export default function CampaignModal({ editing, locales, onClose, onSaved, show
       nombre_tecnico: targetName,
       image_path: selectedTarget?.imagePath || `/image-targets/${targetName}_luminance.png`,
       thumbnail_path: selectedTarget?.thumbnail || `/image-targets/${targetName}_thumbnail.png`,
-      original_path: selectedTarget?.resources?.originalImage
-        ? `/image-targets/${selectedTarget.resources.originalImage}`
-        : `/image-targets/${targetName}_original.png`,
+      original_path: selectedTarget?.originalPath || `/image-targets/${targetName}_original.png`,
       properties: selectedTarget?.properties || {},
-      contrast_score: 86,
-      qr_access_url: `https://localhost/?campaign=${editing ? editing.campaign_id : 'nueva'}`,
+      contrast_score: selectedTarget?.contrastScore ?? selectedTarget?.contrast_score ?? 80,
     }
 
     const content = {
       tipo_contenido: isVideo ? 'VIDEO_MP4' : 'PANEL_INFORMATIVO',
       media_url: form.media_url,
       media_mime_type: mime,
-      media_size_bytes: 1024,
+      media_size_bytes: form.media_size_bytes || 1024,
       titulo_promocion: form.titulo_promocion || form.nombre,
       condiciones_texto: form.condiciones_texto || 'Promoción sujeta a disponibilidad en el local.',
       cta_primaria_label: form.cta_label || 'Ver condiciones',
@@ -277,6 +281,11 @@ export default function CampaignModal({ editing, locales, onClose, onSaved, show
                       className="w-full h-20 object-cover rounded-lg bg-[#f1f3ef]"
                     />
                     <div className="mt-1.5 text-xs font-semibold text-[#18241e] truncate">{t.name}</div>
+                    {t.contrastScore != null && (
+                      <div className={`text-[10px] ${t.contrastScore < 35 ? 'text-red-700' : 'text-[#657069]'}`}>
+                        Contraste {t.contrastScore}/100
+                      </div>
+                    )}
                     {form.target_name === t.name && <div className="text-[10px] text-[#1b4332]">✓ Seleccionado</div>}
                   </button>
                 ))}

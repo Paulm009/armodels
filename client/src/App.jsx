@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import Overview from './views/Overview.jsx'
 import Campaigns from './views/Campaigns.jsx'
@@ -10,6 +10,8 @@ import StoreModal from './components/StoreModal.jsx'
 import WebARModal from './components/WebARModal.jsx'
 import AccessChooser from './components/AccessChooser.jsx'
 import PosterModal from './components/PosterModal.jsx'
+import LoginScreen from './components/LoginScreen.jsx'
+import PublicExperience from './components/PublicExperience.jsx'
 import { api } from './api.js'
 
 const VIEW_TITLES = {
@@ -20,20 +22,36 @@ const VIEW_TITLES = {
   howtotest: 'Cómo probar',
 }
 
+function getPublicAccess() {
+  if (typeof window === 'undefined') return null
+  const pathMatch = window.location.pathname.match(/^\/ar\/([^/]+)/)
+  if (pathMatch) {
+    return { campaignId: decodeURIComponent(pathMatch[1]), accessMechanism: 'QR_CODE' }
+  }
+  const params = new URLSearchParams(window.location.search)
+  const campaignId = params.get('campaign')
+  if (campaignId) return { campaignId, accessMechanism: 'DIRECT_URL' }
+  return null
+}
+
 export default function App() {
+  const publicAccess = useMemo(() => getPublicAccess(), [])
   const [view, setView] = useState('overview')
   const [locales, setLocales] = useState([])
   const [campaigns, setCampaigns] = useState([])
   const [reports, setReports] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [authState, setAuthState] = useState(publicAccess ? 'authed' : 'checking')
+  const [user, setUser] = useState(null)
 
   const [campaignModal, setCampaignModal] = useState({ open: false, editing: null })
   const [storeModal, setStoreModal] = useState({ open: false, editing: null })
-  const [chooser, setChooser] = useState(null) // campaña para elegir Ver afiche / Probar cámara
-  const [poster, setPoster] = useState(null) // campaña cuyo afiche se muestra
-  const [webar, setWebar] = useState(null) // { campaign }
+  const [chooser, setChooser] = useState(null)
+  const [poster, setPoster] = useState(null)
+  const [webar, setWebar] = useState(null)
   const [toast, setToast] = useState(null)
+  const telemetryTimer = useRef(null)
 
   const showToast = useCallback((msg) => {
     setToast(msg)
@@ -61,14 +79,81 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    refresh()
+    if (publicAccess) return
+    let active = true
+    api
+      .me()
+      .then((data) => {
+        if (!active) return
+        setUser(data.user)
+        setAuthState('authed')
+      })
+      .catch(() => {
+        if (active) setAuthState('anonymous')
+      })
+
+    const onUnauthorized = () => {
+      setUser(null)
+      setAuthState('anonymous')
+    }
+    window.addEventListener('webar:unauthorized', onUnauthorized)
+    return () => {
+      active = false
+      window.removeEventListener('webar:unauthorized', onUnauthorized)
+    }
+  }, [publicAccess])
+
+  useEffect(() => {
+    if (authState === 'authed' && !publicAccess) refresh()
+  }, [authState, publicAccess, refresh])
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(telemetryTimer.current)
+    }
+  }, [])
+
+  const handleTelemetry = useCallback(() => {
+    window.clearTimeout(telemetryTimer.current)
+    telemetryTimer.current = window.setTimeout(() => refresh(), 1800)
   }, [refresh])
 
-  const handleNavigate = (v) => setView(v)
+  const handleLogin = (loggedUser) => {
+    setUser(loggedUser)
+    setAuthState('authed')
+  }
+
+  const handleLogout = async () => {
+    try {
+      await api.logout()
+    } finally {
+      setUser(null)
+      setAuthState('anonymous')
+    }
+  }
+
+  const handleNavigate = (nextView) => setView(nextView)
+
+  if (publicAccess) {
+    return (
+      <PublicExperience
+        campaignId={publicAccess.campaignId}
+        accessMechanism={publicAccess.accessMechanism}
+      />
+    )
+  }
+
+  if (authState === 'checking') {
+    return <div className="min-h-screen flex items-center justify-center text-[#657069]">Verificando sesión…</div>
+  }
+
+  if (authState === 'anonymous') {
+    return <LoginScreen onLogin={handleLogin} />
+  }
 
   return (
     <div className="min-h-screen">
-      <Sidebar view={view} onNavigate={handleNavigate} />
+      <Sidebar view={view} onNavigate={handleNavigate} user={user} onLogout={handleLogout} />
 
       <div className="lg:pl-64">
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -79,7 +164,7 @@ export default function App() {
           </div>
 
           {error && (
-            <div className="mb-4 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+            <div className="mb-4 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm" role="alert">
               {error}
             </div>
           )}
@@ -96,6 +181,7 @@ export default function App() {
                   onNavigate={handleNavigate}
                   onNewCampaign={() => setCampaignModal({ open: true, editing: null })}
                   onTest={(c) => setChooser(c)}
+                  onChanged={refresh}
                 />
               )}
               {view === 'campaigns' && (
@@ -105,6 +191,7 @@ export default function App() {
                   onNewCampaign={() => setCampaignModal({ open: true, editing: null })}
                   onEdit={(c) => setCampaignModal({ open: true, editing: c })}
                   onTest={(c) => setChooser(c)}
+                  onChanged={refresh}
                 />
               )}
               {view === 'stores' && (
@@ -160,7 +247,7 @@ export default function App() {
             setChooser(null)
           }}
           onCamera={() => {
-            setWebar({ campaign: chooser })
+            setWebar({ campaign: chooser, accessMechanism: 'DIRECT_URL' })
             setChooser(null)
           }}
         />
@@ -180,8 +267,12 @@ export default function App() {
       {webar && (
         <WebARModal
           campaign={webar.campaign}
-          onClose={() => setWebar(null)}
-          onEvent={refresh}
+          accessMechanism={webar.accessMechanism || 'DIRECT_URL'}
+          onClose={() => {
+            setWebar(null)
+            refresh()
+          }}
+          onEvent={handleTelemetry}
         />
       )}
 

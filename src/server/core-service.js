@@ -8,8 +8,22 @@
 const path = require('path')
 const fs = require('fs')
 const { getPrismaClient } = require('./db')
+const { verifyPassword } = require('./auth')
 
 const ALLOWED_ROLES_FOR_MUTATION = new Set(['DIRECCION_MARKETING', 'GERENCIA'])
+const EVENT_TYPES = new Set([
+  'SESSION_OPEN',
+  'CAMERA_READY',
+  'SCANNING_STARTED',
+  'TARGET_FOUND',
+  'TARGET_RECOVERED',
+  'TARGET_LOST',
+  'CONTENT_VIEWED',
+  'CTA_CLICK',
+  'TRACKING_INTERVAL_CLOSED',
+  'SESSION_ERROR',
+  'SESSION_CLOSE',
+])
 const ALLOWED_MIME_SIGNATURES = {
   'image/png': { offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47] },
   'image/jpeg': { offset: 0, bytes: [0xff, 0xd8, 0xff] },
@@ -35,6 +49,98 @@ function toISODate(date) {
   return d ? d.toISOString().slice(0, 10) : null
 }
 
+const ROOT = path.resolve(__dirname, '..', '..')
+
+function safeTargetName(value) {
+  return path.basename(String(value || '').replace(/\\/g, '/'))
+}
+
+function normalizeTargetAsset(value, fallbackFile) {
+  if (!value) return fallbackFile ? `/image-targets/${fallbackFile}` : ''
+  const raw = String(value).replace(/\\/g, '/')
+  if (/^https?:/i.test(raw)) return raw
+  const clean = raw.replace(/^\/+/, '')
+  if (clean.startsWith('image-targets/')) return `/${clean}`
+  if (clean.includes('/')) return `/${clean}`
+  return `/image-targets/${clean}`
+}
+
+function localPathFromUrl(value) {
+  if (!value || typeof value !== 'string') return null
+  if (/^https?:/i.test(value)) return null
+  let clean = value.replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!clean) return null
+  // Las URLs públicas /media/... viven físicamente en public/media/...
+  if (clean.startsWith('media/')) clean = `public/${clean}`
+  return path.join(ROOT, clean)
+}
+
+function assertTargetAssets(target) {
+  const name = safeTargetName(target.nombre_tecnico || target.name || '')
+  const imagePath = target.image_path || target.imagePath || ''
+  const metadataPath = name ? path.join(TARGETS_DIR, `${name}.json`) : null
+  const hasMetadata = metadataPath && fs.existsSync(metadataPath)
+
+  if (hasMetadata) {
+    const expectedImage = localPathFromUrl(imagePath) || path.join(TARGETS_DIR, `${name}_luminance.png`)
+    if (expectedImage && !fs.existsSync(expectedImage)) {
+      throw new Error(`La imagen del objetivo '${name}' no existe en el servidor. Vuelve a generarla antes de publicar.`)
+    }
+    return
+  }
+
+  if (/image-targets\//i.test(imagePath)) {
+    const expectedImage = localPathFromUrl(imagePath)
+    if (expectedImage && !fs.existsSync(expectedImage)) {
+      throw new Error(`La imagen objetivo '${imagePath}' no existe en el servidor.`)
+    }
+  }
+}
+
+function assertMediaAsset(mediaUrl) {
+  if (!mediaUrl || !String(mediaUrl).startsWith('/media/')) return
+  const filePath = localPathFromUrl(mediaUrl)
+  if (filePath && !fs.existsSync(filePath)) {
+    throw new Error(`El contenido '${mediaUrl}' no existe en el servidor. Súbelo de nuevo antes de publicar.`)
+  }
+}
+
+/**
+ * Verificación heurística de MP4 para móviles. 8th Wall/WebGL necesita que el
+ * navegador pueda decodificar el video; H.264 en un MP4 con índice `moov` es la
+ * combinación más compatible con iOS y Android.
+ */
+function validateMp4ForMobile(buffer) {
+  if (!buffer || buffer.length < 12) throw new Error('El archivo MP4 está vacío o incompleto.')
+  const hasFtyp = buffer.includes(Buffer.from('ftyp'))
+  const hasMoov = buffer.includes(Buffer.from('moov'))
+  const hasAvc = buffer.includes(Buffer.from('avc1')) || buffer.includes(Buffer.from('avc3'))
+  if (!hasFtyp || !hasMoov) {
+    throw new Error('El MP4 no tiene una estructura válida (falta ftyp o moov). Vuelve a exportarlo.')
+  }
+  if (!hasAvc) {
+    throw new Error(
+      'El video debe usar H.264 (AVC) para reproducirse en iPhone y Android. Exporta el MP4 con códec H.264, formato yuv420p y faststart.'
+    )
+  }
+}
+
+async function computeContrastScore(filePath) {
+  try {
+    const sharp = await import('sharp').then((m) => m.default)
+    const stats = await sharp(filePath).greyscale().stats()
+    const stdev = stats.channels && stats.channels[0] ? stats.channels[0].stdev : 0
+    return Math.max(0, Math.min(100, Math.round(stdev * 1.6)))
+  } catch {
+    return null
+  }
+}
+
+function publicCampaignUrl(campaignId) {
+  const base = String(process.env.PUBLIC_BASE_URL || process.env.VITE_PUBLIC_URL || '').replace(/\/+$/, '')
+  return `${base}/ar/${encodeURIComponent(campaignId)}`
+}
+
 class PaseoAranjuezCoreService {
   constructor(prismaClient = null) {
     this.prisma = prismaClient || getPrismaClient()
@@ -50,6 +156,24 @@ class PaseoAranjuezCoreService {
       throw err
     }
     return true
+  }
+
+  /**
+   * Autenticación de usuarios administrativos (OE2 / Sección 2.10.1).
+   * Devuelve los datos públicos del usuario o null.
+   */
+  async authenticateAdmin(usuario, password) {
+    if (!usuario || !password) return null
+    const user = await this.prisma.usuarioAdministrativo.findUnique({ where: { usuario } })
+    if (!user || !user.activo || !user.passwordHash) return null
+    if (!verifyPassword(password, user.passwordHash)) return null
+    return {
+      id: user.id,
+      usuario: user.usuario,
+      nombre: user.nombre,
+      cargo: user.cargo,
+      rol: user.rol,
+    }
   }
 
   /**
@@ -71,8 +195,12 @@ class PaseoAranjuezCoreService {
       }
     }
     if (mimeType.startsWith('image/')) {
-      if (width < 480 || height < 640) {
-        throw new Error(`Resolución insuficiente (${width}x${height}). 8th Wall Image Target CLI requiere al menos 480x640 px.`)
+      const minSide = Math.min(Number(width) || 0, Number(height) || 0)
+      const maxSide = Math.max(Number(width) || 0, Number(height) || 0)
+      if (minSide < 480 || maxSide < 640) {
+        throw new Error(
+          `Resolución insuficiente (${width}x${height}). El objetivo debe tener al menos 480 px en el lado menor y 640 px en el mayor.`
+        )
       }
       if (typeof contrastScore === 'number' && contrastScore < 35) {
         throw new Error(`Contraste visual insuficiente (${contrastScore}/100). Se recomienda detalle variado y alto contraste (Sección 2.3.5).`)
@@ -188,6 +316,12 @@ class PaseoAranjuezCoreService {
 
     const t = target || {}
     const c = content || {}
+    const targetName = t.nombre_tecnico || t.name || `${campaign_id}-target`
+
+    if (estado === 'PUBLICADA') {
+      assertTargetAssets({ ...t, nombre_tecnico: targetName })
+      assertMediaAsset(c.media_url || c.mediaUrl)
+    }
 
     const campana = await this.prisma.campana.create({
       data: {
@@ -208,13 +342,13 @@ class PaseoAranjuezCoreService {
         targetId: t.target_id || `${campaign_id}-target`,
         version: nextVersion,
         campanaId: campana.id,
-        nombreTecnico: t.nombre_tecnico || t.name || 'target',
-        imagePath: t.image_path || t.imagePath || '',
-        thumbnailPath: t.thumbnail_path || t.thumbnailPath || '',
-        originalPath: t.original_path || t.originalPath || '',
+        nombreTecnico: targetName,
+        imagePath: normalizeTargetAsset(t.image_path || t.imagePath, `${targetName}_luminance.png`),
+        thumbnailPath: normalizeTargetAsset(t.thumbnail_path || t.thumbnailPath, `${targetName}_thumbnail.png`),
+        originalPath: normalizeTargetAsset(t.original_path || t.originalPath, `${targetName}_original.png`),
         propertiesJson: JSON.stringify(t.properties || {}),
         contrastScore: t.contrast_score ?? t.contrastScore ?? 80,
-        qrAccessUrl: t.qr_access_url || t.qrAccessUrl || '',
+        qrAccessUrl: t.qr_access_url || t.qrAccessUrl || publicCampaignUrl(campaign_id),
       },
     })
 
@@ -293,13 +427,21 @@ class PaseoAranjuezCoreService {
       const name = file.replace(/\.json$/, '')
       try {
         const raw = JSON.parse(fs.readFileSync(path.join(TARGETS_DIR, file), 'utf-8'))
+        const resources = raw.resources || {}
+        const luminanceFile = resources.luminanceImage || `${name}_luminance.png`
+        const imagePath = normalizeTargetAsset(raw.imagePath, luminanceFile)
+        const fullImagePath = localPathFromUrl(imagePath)
+        const contrastScore = fullImagePath ? await computeContrastScore(fullImagePath) : null
         targets.push({
           name: raw.name || name,
           type: raw.type || 'PLANAR',
           properties: raw.properties || {},
-          imagePath: raw.imagePath || `image-targets/${name}_luminance.png`,
-          resources: raw.resources || {},
-          thumbnail: `image-targets/${(raw.resources && raw.resources.thumbnailImage) || `${name}_thumbnail.png`}`,
+          imagePath,
+          thumbnail: normalizeTargetAsset(null, resources.thumbnailImage || `${name}_thumbnail.png`),
+          originalPath: normalizeTargetAsset(null, resources.originalImage || `${name}_original.png`),
+          resources,
+          contrastScore,
+          contrast_score: contrastScore,
         })
       } catch {
         /* archivo de metadata corrupto, se omite */
@@ -344,13 +486,19 @@ class PaseoAranjuezCoreService {
 
     const dataPath = path.join(TARGETS_DIR, `${name}.json`)
     const data = JSON.parse(fs.readFileSync(dataPath, 'utf-8'))
+    const resources = data.resources || {}
+    const luminanceFile = resources.luminanceImage || `${name}_luminance.png`
+    const contrastScore = await computeContrastScore(path.join(TARGETS_DIR, luminanceFile))
     return {
       name: data.name || name,
       type: data.type || 'PLANAR',
       properties: data.properties || {},
-      imagePath: data.imagePath,
-      resources: data.resources || {},
-      thumbnail: `image-targets/${(data.resources && data.resources.thumbnailImage) || `${name}_thumbnail.png`}`,
+      imagePath: normalizeTargetAsset(data.imagePath, luminanceFile),
+      originalPath: normalizeTargetAsset(null, resources.originalImage || `${name}_original.png`),
+      resources,
+      thumbnail: normalizeTargetAsset(null, resources.thumbnailImage || `${name}_thumbnail.png`),
+      contrastScore,
+      contrast_score: contrastScore,
     }
   }
 
@@ -369,6 +517,8 @@ class PaseoAranjuezCoreService {
 
     const filename = `${Date.now()}_${this.sanitizeFilename(originalName || `contenido.${extension}`)}`
     const magicBytes = Array.from(buffer.subarray(0, 16))
+
+    if (mimeType === 'video/mp4') validateMp4ForMobile(buffer)
 
     const extra = {}
     if (mimeType.startsWith('image/')) {
@@ -410,6 +560,7 @@ class PaseoAranjuezCoreService {
     }
     const latest = versions[0]
     const referenceDate = referenceDateStr ? parseDate(referenceDateStr) : new Date()
+    const fechaInicio = parseDate(latest.fecha_inicio)
     const fechaFin = parseDate(latest.fecha_fin)
 
     if (latest.estado === 'VENCIDA' || (fechaFin && fechaFin < referenceDate)) {
@@ -430,27 +581,58 @@ class PaseoAranjuezCoreService {
         message: 'La campaña aún no se encuentra publicada.',
       }
     }
+    if (fechaInicio && fechaInicio > referenceDate) {
+      return {
+        found: true,
+        status: 'NOT_STARTED',
+        campaign: latest,
+        showPromotionalMedia: false,
+        message: 'La campaña todavía no ha comenzado. Consulta nuevamente en su fecha de inicio.',
+      }
+    }
 
-    const imageTargetData = latest.targets.map((target) => this.readTargetMetadata(target))
+    const imageTargetData = latest.targets.map((target) => {
+      const metadata = this.readTargetMetadata(target)
+      const content = latest.contents.find((item) => item.imagen_objetivo_id === target.id) || latest.content
+      return {
+        ...metadata,
+        targetId: target.target_id,
+        targetDbId: target.id,
+        targetVersion: target.target_version,
+        content,
+      }
+    })
     return {
       found: true,
       status: 'ACTIVE',
       campaign: latest,
       showPromotionalMedia: true,
+      publicUrl: publicCampaignUrl(campaignId),
+      qrUrl: `/api/v1/public/campaigns/${encodeURIComponent(campaignId)}/qr`,
       imageTargetData,
     }
   }
 
   readTargetMetadata(target) {
-    const name = target.nombre_tecnico || target.target_id
+    const name = safeTargetName(target.nombre_tecnico || target.target_id)
     const filePath = path.join(TARGETS_DIR, `${name}.json`)
     try {
       const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-      return { ...raw, name: raw.name || name }
+      const resources = raw.resources || {}
+      return {
+        ...raw,
+        name: raw.name || name,
+        imagePath: normalizeTargetAsset(raw.imagePath, resources.luminanceImage || `${name}_luminance.png`),
+        thumbnail: normalizeTargetAsset(null, resources.thumbnailImage || `${name}_thumbnail.png`),
+        originalPath: normalizeTargetAsset(null, resources.originalImage || `${name}_original.png`),
+        resources,
+      }
     } catch {
       // Reconstrucción mínima a partir del registro persistido
       return {
-        imagePath: target.image_path,
+        imagePath: normalizeTargetAsset(target.image_path, `${name}_luminance.png`),
+        thumbnail: normalizeTargetAsset(target.thumbnail_path, `${name}_thumbnail.png`),
+        originalPath: normalizeTargetAsset(target.original_path, `${name}_original.png`),
         name,
         type: 'PLANAR',
         properties: safeParseJson(target.properties_json, {}),
@@ -470,10 +652,22 @@ class PaseoAranjuezCoreService {
    * idempotente por event_id (Sección 2.8.4 y 2.11.3).
    */
   async ingestEvent(eventInput) {
+    if (!eventInput || typeof eventInput !== 'object') {
+      throw new Error('Contrato de evento inválido: se esperaba un objeto JSON.')
+    }
     const requiredFields = ['event_id', 'session_id', 'campaign_id', 'campaign_version', 'event_type', 'client_time']
     for (const field of requiredFields) {
       if (eventInput[field] === undefined || eventInput[field] === null || eventInput[field] === '') {
         throw new Error(`Contrato de evento inválido: falta el campo obligatorio '${field}'.`)
+      }
+    }
+    if (!EVENT_TYPES.has(eventInput.event_type)) {
+      throw new Error(`Tipo de evento no permitido: '${eventInput.event_type}'.`)
+    }
+    if (eventInput.payload && typeof eventInput.payload === 'object') {
+      const payloadSize = Buffer.byteLength(JSON.stringify(eventInput.payload), 'utf8')
+      if (payloadSize > 16 * 1024) {
+        throw new Error('El payload del evento supera el límite de 16 KB.')
       }
     }
 
@@ -482,44 +676,79 @@ class PaseoAranjuezCoreService {
       return { deduplicated: true, event: serializeEvent(existing) }
     }
 
+    const campaignVersion = await this.prisma.campana.findFirst({
+      where: { campaignId: eventInput.campaign_id, version: Number(eventInput.campaign_version) },
+      select: { id: true },
+    })
+    if (!campaignVersion) {
+      const err = new Error(`La campaña '${eventInput.campaign_id}' en la versión ${eventInput.campaign_version} no está registrada.`)
+      err.statusCode = 404
+      throw err
+    }
+
+    const eventType = eventInput.event_type
+    const deviceFamily = eventInput.device_family || (eventInput.payload && eventInput.payload.deviceFamily) || 'unknown'
+    const userAgent = eventInput.user_agent || null
+    const engineVersion = eventInput.engine_version || null
+    const appVersion = eventInput.app_version || null
+    const errorCategory =
+      eventType === 'SESSION_ERROR' ? (eventInput.payload && eventInput.payload.errorCategory) || 'UNKNOWN' : null
+
+    const sessionUpdate = {}
+    if (eventType === 'CAMERA_READY') sessionUpdate.cameraReady = true
+    if (eventType === 'SCANNING_STARTED') sessionUpdate.scanningStarted = true
+    if (eventType === 'SESSION_CLOSE') sessionUpdate.endedAt = new Date()
+    if (userAgent) sessionUpdate.userAgent = userAgent
+    if (engineVersion) sessionUpdate.engineVersion = engineVersion
+    if (appVersion) sessionUpdate.appVersion = appVersion
+
     await this.prisma.sesion.upsert({
       where: { sessionId: eventInput.session_id },
-      update: {},
+      update: sessionUpdate,
       create: {
         sessionId: eventInput.session_id,
         campaignId: eventInput.campaign_id,
-        campaignVersion: eventInput.campaign_version,
-        accessMechanism: (eventInput.payload && eventInput.payload.accessMechanism) || 'QR_CODE',
-        deviceFamily: eventInput.device_family || 'unknown',
-        cameraReady: eventInput.event_type === 'CAMERA_READY',
-        scanningStarted: eventInput.event_type === 'SCANNING_STARTED',
+        campaignVersion: Number(eventInput.campaign_version),
+        accessMechanism: (eventInput.payload && eventInput.payload.accessMechanism) || 'DIRECT_URL',
+        deviceFamily,
+        userAgent,
+        engineVersion,
+        appVersion,
+        cameraReady: eventType === 'CAMERA_READY',
+        scanningStarted: eventType === 'SCANNING_STARTED',
         startedAt: parseDate(eventInput.client_time) || new Date(),
       },
     })
 
-    const stored = await this.prisma.evento.create({
-      data: {
-        eventId: eventInput.event_id,
-        sessionId: eventInput.session_id,
-        campaignId: eventInput.campaign_id,
-        campaignVersion: eventInput.campaign_version,
-        targetId: eventInput.target_id || null,
-        targetVersion: eventInput.target_version || null,
-        eventType: eventInput.event_type,
-        payload: JSON.stringify(eventInput.payload || {}),
-        clientTime: parseDate(eventInput.client_time) || new Date(),
-        schemaVersion: eventInput.schema_version || '1.0.0',
-      },
-    })
-
-    if (eventInput.event_type === 'SESSION_CLOSE') {
-      await this.prisma.sesion.update({
-        where: { sessionId: eventInput.session_id },
-        data: { endedAt: new Date() },
+    try {
+      const stored = await this.prisma.evento.create({
+        data: {
+          eventId: eventInput.event_id,
+          sessionId: eventInput.session_id,
+          campaignId: eventInput.campaign_id,
+          campaignVersion: Number(eventInput.campaign_version),
+          targetId: eventInput.target_id || null,
+          targetVersion: eventInput.target_version ? Number(eventInput.target_version) : null,
+          eventType,
+          payload: JSON.stringify(eventInput.payload || {}),
+          deviceFamily,
+          userAgent,
+          engineVersion,
+          appVersion,
+          errorCategory,
+          clientTime: parseDate(eventInput.client_time) || new Date(),
+          schemaVersion: eventInput.schema_version || '1.1.0',
+        },
       })
+      return { deduplicated: false, event: serializeEvent(stored) }
+    } catch (error) {
+      // Dos reintentos simultáneos pueden chocar con la clave única de event_id.
+      if (error && error.code === 'P2002') {
+        const duplicated = await this.prisma.evento.findUnique({ where: { eventId: eventInput.event_id } })
+        if (duplicated) return { deduplicated: true, event: serializeEvent(duplicated) }
+      }
+      throw error
     }
-
-    return { deduplicated: false, event: serializeEvent(stored) }
   }
 
   /**
@@ -534,28 +763,113 @@ class PaseoAranjuezCoreService {
     return computeMetricsFromEvents(campaignId, campaignVersion, events)
   }
 
-  async listReports() {
+  async listReports({ latestOnly = true } = {}) {
     const campanas = await this.prisma.campana.findMany({
       orderBy: [{ campaignId: 'asc' }, { version: 'desc' }],
       include: { local: true },
     })
+    const seen = new Set()
+    const selected = latestOnly
+      ? campanas.filter((campaign) => {
+          if (seen.has(campaign.campaignId)) return false
+          seen.add(campaign.campaignId)
+          return true
+        })
+      : campanas
+
     const reports = []
-    for (const c of campanas) {
+    for (const c of selected) {
       const metrics = await this.computeCampaignMetrics(c.campaignId, c.version)
       reports.push({
         campaignId: c.campaignId,
         title: c.nombre,
         version: c.version,
         estado: c.estado,
+        local: c.local ? { id: c.local.id, nombre: c.local.nombre } : null,
+        fechaInicio: toISODate(c.fechaInicio),
+        fechaFin: toISODate(c.fechaFin),
         mode: 'CAMERA',
         sessions: metrics.indicators.sesionesConReconocimiento.denominator,
         recognized: metrics.indicators.sesionesConReconocimiento.value,
         trackingSec: metrics.indicators.seguimientoVisibleSegundos.valueSec,
         ctaClicks: metrics.indicators.sesionesConCTA.numerator,
         errors: metrics.indicators.tasaErrorDeSesion.numerator,
+        uniqueEventsCount: metrics.uniqueEventsCount,
+        metrics: metrics.indicators,
       })
     }
     return reports
+  }
+
+  async updateCampaignStatus(campaignId, estado, userRole = 'DIRECCION_MARKETING') {
+    this.authorizeAdminOperation(userRole, 'updateCampaignStatus')
+    if (!CAMPAIGN_STATES.includes(estado)) throw new Error(`Estado de campaña inválido: ${estado}.`)
+
+    const latest = await this.prisma.campana.findFirst({
+      where: { campaignId },
+      orderBy: { version: 'desc' },
+      include: { imagenes: true, contenidos: true },
+    })
+    if (!latest) {
+      const err = new Error(`La campaña '${campaignId}' no existe.`)
+      err.statusCode = 404
+      throw err
+    }
+
+    if (estado === 'PUBLICADA') {
+      if (latest.fechaFin < new Date()) {
+        throw new Error('No se puede publicar una campaña cuya fecha de vigencia ya ha vencido (Sección 2.11.1).')
+      }
+      if (!latest.imagenes.length) {
+        throw new Error('No se puede publicar una campaña sin su Imagen Objetivo.')
+      }
+      if (!latest.contenidos.length) {
+        throw new Error('No se puede publicar una campaña sin contenido.')
+      }
+      const target = latest.imagenes[0]
+      assertTargetAssets({
+        nombre_tecnico: target.nombreTecnico,
+        image_path: target.imagePath,
+      })
+      assertMediaAsset(latest.contenidos[0].mediaUrl)
+    }
+
+    await this.prisma.campana.update({ where: { id: latest.id }, data: { estado } })
+    return this.getCampaignById(campaignId, latest.version)
+  }
+
+  async updateCampaignContent(campaignId, content = {}, userRole = 'DIRECCION_MARKETING') {
+    this.authorizeAdminOperation(userRole, 'updateCampaignContent')
+    const latest = await this.prisma.campana.findFirst({
+      where: { campaignId },
+      orderBy: { version: 'desc' },
+      include: { contenidos: true },
+    })
+    if (!latest) {
+      const err = new Error(`La campaña '${campaignId}' no existe.`)
+      err.statusCode = 404
+      throw err
+    }
+    const current = latest.contenidos[0]
+    if (!current) {
+      throw new Error('La campaña no tiene un contenido registrado que actualizar.')
+    }
+    const mediaUrl = content.media_url || content.mediaUrl || current.mediaUrl
+    assertMediaAsset(mediaUrl)
+    await this.prisma.contenido.update({
+      where: { id: current.id },
+      data: {
+        mediaUrl,
+        mediaMimeType: content.media_mime_type || content.mediaMimeType || current.mediaMimeType,
+        mediaSizeBytes: content.media_size_bytes || content.mediaSizeBytes || current.mediaSizeBytes,
+        tituloPromocion: content.titulo_promocion || content.tituloPromocion || current.tituloPromocion,
+        condicionesTexto: content.condiciones_texto || content.condicionesTexto || current.condicionesTexto,
+        ctaPrimariaLabel: content.cta_primaria_label || content.ctaPrimariaLabel || current.ctaPrimariaLabel,
+        ctaSecundariaLabel: content.cta_secundaria_label || content.ctaSecundariaLabel || current.ctaSecundariaLabel,
+        ctaSecundariaUrl: content.cta_secundaria_url || content.ctaSecundariaUrl || current.ctaSecundariaUrl,
+      },
+    })
+    return this.getCampaignById(campaignId, latest.version)
   }
 }
 
@@ -581,6 +895,11 @@ function serializeEvent(e) {
     target_version: e.targetVersion,
     event_type: e.eventType,
     payload: safeParseJson(e.payload, {}),
+    device_family: e.deviceFamily || null,
+    user_agent: e.userAgent || null,
+    engine_version: e.engineVersion || null,
+    app_version: e.appVersion || null,
+    error_category: e.errorCategory || null,
     client_time: e.clientTime ? e.clientTime.toISOString() : null,
     received_at: e.receivedAt ? e.receivedAt.toISOString() : null,
     schema_version: e.schemaVersion,
@@ -589,18 +908,20 @@ function serializeEvent(e) {
 
 function serializeCampaign(c) {
   const targets = (c.imagenes || []).map((t) => ({
+    id: t.id,
     target_id: t.targetId,
     target_version: t.version,
     nombre_tecnico: t.nombreTecnico,
-    image_path: t.imagePath,
-    thumbnail_path: t.thumbnailPath,
-    original_path: t.originalPath,
+    image_path: normalizeTargetAsset(t.imagePath, `${t.nombreTecnico}_luminance.png`),
+    thumbnail_path: normalizeTargetAsset(t.thumbnailPath, `${t.nombreTecnico}_thumbnail.png`),
+    original_path: normalizeTargetAsset(t.originalPath, `${t.nombreTecnico}_original.png`),
     properties: safeParseJson(t.propertiesJson, {}),
     contrast_score: t.contrastScore,
     qr_access_url: t.qrAccessUrl,
   }))
   const contents = (c.contenidos || []).map((ct) => ({
     content_id: ct.id,
+    imagen_objetivo_id: ct.imagenObjetivoId,
     tipo_contenido: ct.tipoContenido,
     media_url: ct.mediaUrl,
     media_size_bytes: ct.mediaSizeBytes,

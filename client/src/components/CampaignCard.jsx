@@ -1,8 +1,25 @@
+import { useState } from 'react'
+import { api } from '../api.js'
 import { statusLabel, statusClass, mediaTypeLabel, posterUrl } from '../lib.js'
 
-export default function CampaignCard({ campaign, onEdit, onTest }) {
+export default function CampaignCard({ campaign, onEdit, onTest, onChanged }) {
   const local = campaign.local || {}
   const content = campaign.content
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const changeStatus = async (estado) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.updateCampaignStatus(campaign.campaign_id, estado)
+      if (onChanged) onChanged()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="card p-5 flex flex-col gap-4">
       <div className="flex items-start justify-between gap-3">
@@ -38,7 +55,7 @@ export default function CampaignCard({ campaign, onEdit, onTest }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 pt-1 border-t border-[#f0efe9]">
+      <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-[#f0efe9]">
         <button
           onClick={() => onTest(campaign)}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#1b4332] text-white text-xs font-semibold hover:bg-[#143527] transition"
@@ -51,7 +68,26 @@ export default function CampaignCard({ campaign, onEdit, onTest }) {
         >
           Editar
         </button>
+        {campaign.estado !== 'PUBLICADA' && (
+          <button
+            onClick={() => changeStatus('PUBLICADA')}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#e6f4ea] text-[#1b4332] text-xs font-semibold hover:bg-[#d8e9b4] transition disabled:opacity-50"
+          >
+            Publicar
+          </button>
+        )}
+        {campaign.estado === 'PUBLICADA' && (
+          <button
+            onClick={() => changeStatus('ARCHIVADA')}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#eef0f2] text-[#657069] text-xs font-semibold hover:bg-[#e6e4dc] transition disabled:opacity-50"
+          >
+            Archivar
+          </button>
+        )}
       </div>
+      {error && <p className="text-xs text-red-700">{error}</p>}
     </div>
   )
 }

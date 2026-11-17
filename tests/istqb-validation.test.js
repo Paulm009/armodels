@@ -9,6 +9,7 @@ const assert = require('assert')
 const { execSync } = require('child_process')
 const { PaseoAranjuezCoreService } = require('../src/server/core-service')
 const { newPrismaClient } = require('../src/server/db')
+const { hashPassword, verifyPassword } = require('../src/server/auth')
 const { build8thWallTargetMetadata } = require('../scripts/prepare-image-targets')
 
 const TEST_DATABASE_URL = 'file:./test.db'
@@ -228,6 +229,39 @@ async function runValidationSuite() {
     const visitorLookup = await service.getActiveCampaignForVisitor('CMP-ACTIVA-01', '2027-02-01')
     assert.strictEqual(visitorLookup.status, 'EXPIRED')
     assert.strictEqual(visitorLookup.showPromotionalMedia, false)
+  })
+
+  // PRUEBA 9 (Sección 2.10.1): hash y verificación de contraseñas administrativas
+  await recordTest('TC-09', 'Verificar hash scrypt y rechazar contraseña incorrecta (Sección 2.10.1)', () => {
+    const stored = hashPassword('clave-segura')
+    assert.strictEqual(verifyPassword('clave-segura', stored), true)
+    assert.strictEqual(verifyPassword('clave-incorrecta', stored), false)
+    assert.strictEqual(verifyPassword('clave-segura', null), false)
+  })
+
+  // PRUEBA 10 (Sección 2.8.1): catálogo de eventos validado por el servidor
+  await recordTest('TC-10', 'Rechazar tipos de evento fuera del catálogo permitido (Sección 2.8.1)', async () => {
+    await assert.rejects(
+      () =>
+        service.ingestEvent({
+          event_id: 'EVT-INVALIDO',
+          session_id: 'SES-INVALIDO',
+          campaign_id: 'CMP-ACTIVA-01',
+          campaign_version: 1,
+          event_type: 'EVENTO_INVENTADO',
+          client_time: '2026-11-10T19:00:00Z',
+        }),
+      /no permitido/i
+    )
+  })
+
+  // PRUEBA 11 (Sección 2.5.4): rutas de image target normalizadas y target_id asociado
+  await recordTest('TC-11', 'Normalizar imagePath y asociar target_id en la consulta pública (Sección 2.5.4)', async () => {
+    const active = await service.getActiveCampaignForVisitor('CMP-ACTIVA-01', '2026-11-15')
+    assert.strictEqual(active.status, 'ACTIVE')
+    assert.ok(active.imageTargetData.length > 0)
+    assert.ok(active.imageTargetData[0].imagePath.startsWith('/image-targets/'))
+    assert.strictEqual(active.imageTargetData[0].targetId, 'TGT-01')
   })
 
   await prisma.$disconnect()

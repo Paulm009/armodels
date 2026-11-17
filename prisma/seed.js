@@ -8,8 +8,10 @@
 const path = require('path')
 const fs = require('fs')
 const { PrismaClient } = require('@prisma/client')
+const { hashPassword } = require('../src/server/auth')
 
 const prisma = new PrismaClient()
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '')
 
 function readTargetMetadata(name) {
   const p = path.join(__dirname, '..', 'image-targets', `${name}.json`)
@@ -41,13 +43,31 @@ async function main() {
 
   console.log('Insertando usuarios administrativos (RBAC)...')
   const marketing = await prisma.usuarioAdministrativo.create({
-    data: { nombre: 'María Gutiérrez', cargo: 'Dirección de Marketing', rol: 'DIRECCION_MARKETING' },
+    data: {
+      usuario: 'marketing',
+      passwordHash: hashPassword('marketing123'),
+      nombre: 'María Gutiérrez',
+      cargo: 'Dirección de Marketing',
+      rol: 'DIRECCION_MARKETING',
+    },
   })
   const gerencia = await prisma.usuarioAdministrativo.create({
-    data: { nombre: 'Carlos Rojas', cargo: 'Gerencia General', rol: 'GERENCIA' },
+    data: {
+      usuario: 'gerencia',
+      passwordHash: hashPassword('gerencia123'),
+      nombre: 'Carlos Rojas',
+      cargo: 'Gerencia General',
+      rol: 'GERENCIA',
+    },
   })
   await prisma.usuarioAdministrativo.create({
-    data: { nombre: 'Ana Beltrán', cargo: 'Community Manager', rol: 'COMMUNITY_MANAGER' },
+    data: {
+      usuario: 'community',
+      passwordHash: hashPassword('community123'),
+      nombre: 'Ana Beltrán',
+      cargo: 'Community Manager',
+      rol: 'COMMUNITY_MANAGER',
+    },
   })
 
   console.log('Insertando locales comerciales...')
@@ -106,7 +126,7 @@ async function main() {
         originalPath,
         propertiesJson,
         contrastScore: 86,
-        qrAccessUrl: `https://localhost/?campaign=${campaignId}`,
+        qrAccessUrl: `${PUBLIC_BASE_URL}/ar/${encodeURIComponent(campaignId)}`,
       },
     })
 

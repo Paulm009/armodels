@@ -2,7 +2,7 @@ import { useState } from 'react'
 import CampaignCard from '../components/CampaignCard.jsx'
 import { statusLabel } from '../lib.js'
 
-export default function Campaigns({ campaigns, locales, onNewCampaign, onEdit, onTest }) {
+export default function Campaigns({ campaigns, locales, onNewCampaign, onEdit, onTest, onChanged }) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('ALL')
 
@@ -49,7 +49,7 @@ export default function Campaigns({ campaigns, locales, onNewCampaign, onEdit, o
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {filtered.map((c) => (
-            <CampaignCard key={`${c.campaign_id}-${c.version}`} campaign={c} onEdit={onEdit} onTest={onTest} />
+            <CampaignCard key={`${c.campaign_id}-${c.version}`} campaign={c} onEdit={onEdit} onTest={onTest} onChanged={onChanged} />
           ))}
         </div>
       )}

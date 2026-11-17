@@ -1,6 +1,6 @@
 import CampaignCard from '../components/CampaignCard.jsx'
 
-export default function Overview({ campaigns, reports, locales, onNavigate, onNewCampaign, onTest }) {
+export default function Overview({ campaigns, reports, locales, onNavigate, onNewCampaign, onTest, onChanged }) {
   const published = campaigns.filter((c) => c.estado === 'PUBLICADA').length
   const totalSessions = reports.reduce((acc, r) => acc + (r.sessions || 0), 0)
   const totalCta = reports.reduce((acc, r) => acc + (r.ctaClicks || 0), 0)
@@ -49,7 +49,7 @@ export default function Overview({ campaigns, reports, locales, onNavigate, onNe
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {campaigns.slice(0, 4).map((c) => (
-              <CampaignCard key={`${c.campaign_id}-${c.version}`} campaign={c} onEdit={() => {}} onTest={onTest} />
+              <CampaignCard key={`${c.campaign_id}-${c.version}`} campaign={c} onEdit={() => {}} onTest={onTest} onChanged={onChanged} />
             ))}
           </div>
         )}

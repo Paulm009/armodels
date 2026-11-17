@@ -13,12 +13,14 @@ datasource db {
 }
 
 model UsuarioAdministrativo {
-  id        String   @id @default(cuid())
-  nombre    String
-  cargo     String
-  rol       String // DIRECCION_MARKETING | GERENCIA | PRODUCCION_DISENO | COMMUNITY_MANAGER | TECNOLOGIA_OPERACIONES
-  activo    Boolean  @default(true)
-  createdAt DateTime @default(now()) @map("created_at")
+  id           String   @id @default(cuid())
+  usuario      String?  @unique
+  passwordHash String?  @map("password_hash")
+  nombre       String
+  cargo        String
+  rol          String // DIRECCION_MARKETING | GERENCIA | PRODUCCION_DISENO | COMMUNITY_MANAGER | TECNOLOGIA_OPERACIONES
+  activo       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
 
   @@map("usuarios_administrativos")
 }
@@ -104,6 +106,9 @@ model Sesion {
   campaignVersion Int       @map("campaign_version")
   accessMechanism String    @map("access_mechanism") // QR_CODE | DIRECT_URL
   deviceFamily    String    @map("device_family")
+  userAgent       String?   @map("user_agent")
+  engineVersion   String?   @map("engine_version")
+  appVersion      String?   @map("app_version")
   cameraReady     Boolean   @default(false) @map("camera_ready")
   scanningStarted Boolean   @default(false) @map("scanning_started")
   startedAt       DateTime  @default(now()) @map("started_at")
@@ -124,6 +129,11 @@ model Evento {
   targetVersion   Int?     @map("target_version")
   eventType       String   @map("event_type")
   payload         String @map("payload")
+  deviceFamily    String?  @map("device_family")
+  userAgent       String?  @map("user_agent")
+  engineVersion   String?  @map("engine_version")
+  appVersion      String?  @map("app_version")
+  errorCategory   String?  @map("error_category")
   clientTime      DateTime @map("client_time")
   receivedAt      DateTime @default(now()) @map("received_at")
   schemaVersion   String   @default("1.0.0") @map("schema_version")

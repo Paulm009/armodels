@@ -1,10 +1,15 @@
-import { assetUrl } from '../api.js'
+import { api, assetUrl } from '../api.js'
 import { posterUrl } from '../lib.js'
 
 export default function PosterModal({ campaign, onBack, onClose }) {
   const target = campaign.targets?.[0]
   const posterSrc = target?.original_path ? assetUrl(target.original_path) : posterUrl(campaign)
   const downloadSrc = target?.original_path ? assetUrl(target.original_path) : posterSrc
+  const qrSrc = api.qrUrl(campaign.campaign_id, 512)
+  const configuredUrl = target?.qr_access_url || ''
+  const publicUrl = /^https?:/i.test(configuredUrl)
+    ? configuredUrl
+    : `${window.location.origin}${configuredUrl || `/ar/${campaign.campaign_id}`}`
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
@@ -38,6 +43,24 @@ export default function PosterModal({ campaign, onBack, onClose }) {
             Muestra este afiche en la pantalla de este dispositivo y, desde otro dispositivo, pulsa
             «Probar con la cámara» para escanearlo.
           </p>
+
+          <div className="w-full rounded-xl border border-[#e6e4dc] bg-[#f8f7f3] p-4 flex flex-col sm:flex-row items-center gap-4">
+            <img src={qrSrc} alt={`Código QR de ${campaign.nombre}`} className="w-32 h-32 rounded-lg bg-white p-1" />
+            <div className="text-center sm:text-left space-y-1">
+              <div className="font-semibold text-[#18241e] text-sm">QR de acceso público</div>
+              <p className="text-xs text-[#657069]">
+                Escanéalo desde un teléfono para abrir la experiencia en <code>/ar/{campaign.campaign_id}</code>.
+              </p>
+              <a
+                href={qrSrc}
+                download={`qr_${campaign.campaign_id}.png`}
+                className="inline-block text-xs font-semibold text-[#1b4332] underline break-all"
+              >
+                Descargar QR
+              </a>
+              <p className="text-[11px] text-[#657069] break-all">{publicUrl}</p>
+            </div>
+          </div>
 
           <div className="flex gap-3">
             <button onClick={onBack} className="px-4 py-2.5 rounded-xl border border-[#dcdad2] text-sm font-semibold hover:bg-[#f4f3ee]">
