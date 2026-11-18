@@ -30,6 +30,9 @@ export const WEBAR_STATES = Object.freeze({
 
 const APP_VERSION = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_APP_VERSION) || '1.0.0'
 const DEFAULT_TARGET_ASPECT = 480 / 640
+const MAX_CANVAS_PIXEL_RATIO = 2
+const MAX_CANVAS_EDGE = 1920
+const PREFERRED_CAMERA_EDGE = 1440
 
 export class WebARController {
   constructor({
@@ -74,6 +77,7 @@ export class WebARController {
     this.mediaToken = 0
 
     this.canvas = null
+    this.stopCanvasResize = null
     this.running = false
     this.starting = false
     this.stopped = false
@@ -184,6 +188,8 @@ export class WebARController {
       return false
     }
 
+    if (this.stopped) return false
+
     const XR8 = window.XR8
     if (!XR8 || !XR8.XrController) {
       this.fail('RESOURCE_ERROR', 'El motor de realidad aumentada no pudo inicializar el seguimiento de imágenes. Actualiza el navegador o inténtalo de nuevo.')
@@ -221,6 +227,7 @@ export class WebARController {
         runConfig.allowedDevices = XR8.XrConfig.device().ANY
       }
 
+      this.stopCanvasResize = observeCanvasSize(canvas)
       XR8.run(runConfig)
       if (this.stopped || this.failed) return false
       this.running = true
@@ -267,13 +274,15 @@ export class WebARController {
           self.fail('SCENE_ERROR', `No se pudo preparar la escena AR: ${error.message}`)
         }
       },
-      onCameraStatusChange: ({ status, reason }) => {
+      onCameraStatusChange: ({ status, reason, stream }) => {
+        if (self.stopped) return
         if (status === 'failed') {
           const classified = self.classifyReason(reason)
           self.fail('PERMISSION_OR_CAMERA_ERROR', cameraPermissionMessage(classified), classified)
         } else if (status === 'requesting') {
           self.setState(WEBAR_STATES.PREPARACION, { message: 'Solicitando acceso a la cámara…' })
         } else if (status === 'hasStream') {
+          preferSharperCapture(stream)
           self.setState(WEBAR_STATES.BUSQUEDA, { message: 'Cámara lista. Enfoca el afiche para reconocerlo.' })
         }
       },
@@ -614,6 +623,8 @@ export class WebARController {
     document.removeEventListener('visibilitychange', this.visibilityHandler)
     window.removeEventListener('pagehide', this.pageHideHandler)
     window.removeEventListener('beforeunload', this.pageHideHandler)
+    this.stopCanvasResize?.()
+    this.stopCanvasResize = null
 
     this.disposeMedia()
     if (this.mediaPlane) {
@@ -762,6 +773,50 @@ export class WebARController {
 /* ============================================================================
  * Utilidades de contenido y cámara
  * ============================================================================ */
+
+function observeCanvasSize(canvas) {
+  const resize = () => {
+    const { clientWidth: width, clientHeight: height } = canvas
+    if (!width || !height) return
+
+    // 8th Wall toma estas dimensiones para el fondo de cámara y la proyección AR.
+    const scale = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_PIXEL_RATIO, MAX_CANVAS_EDGE / Math.max(width, height))
+    const pixelWidth = Math.max(1, Math.round(width * scale))
+    const pixelHeight = Math.max(1, Math.round(height * scale))
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight
+  }
+
+  resize()
+  const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(resize) : null
+  observer?.observe(canvas)
+  window.addEventListener('resize', resize)
+  return () => {
+    observer?.disconnect()
+    window.removeEventListener('resize', resize)
+  }
+}
+
+async function preferSharperCapture(stream) {
+  const track = stream?.getVideoTracks()[0]
+  if (!track?.applyConstraints || !track.getSettings) return
+
+  try {
+    const { width, height } = track.getSettings()
+    const longestEdge = Math.max(width, height)
+    if (!width || !height || longestEdge >= PREFERRED_CAMERA_EDGE) return
+
+    // Subir la resolución del mismo stream sin cambiar la cámara ni su proporción.
+    const scale = PREFERRED_CAMERA_EDGE / longestEdge
+    await track.applyConstraints({
+      ...track.getConstraints?.(),
+      width: { ideal: Math.round(width * scale) },
+      height: { ideal: Math.round(height * scale) },
+    })
+  } catch {
+    // Si el dispositivo no permite el cambio, la cámara sigue con su modo original.
+  }
+}
 
 function getMediaType(content) {
   const mime = content.media_mime_type || content.mediaMimeType || ''
